@@ -438,6 +438,12 @@ const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
   const friendly = (err: string | null): { hint: string; tone: "red" | "amber" } | null => {
     if (!err) return null;
     const lower = err.toLowerCase();
+    if (lower.includes("detected_unusual_activity") || lower.includes("free tier usage disabled"))
+      return {
+        hint:
+          "ElevenLabs has disabled free-tier access for this API key (their abuse detector flagged the usage pattern, often triggered by multi-region traffic). Fix: upgrade to ElevenLabs Starter ($5/mo) at elevenlabs.io/app/subscription — the existing key will keep working.",
+        tone: "red",
+      };
     if (lower.includes("quota_exceeded") || lower.includes("credits remaining"))
       return { hint: "ElevenLabs Scribe quota exhausted. Top up credits at elevenlabs.io/app/account.", tone: "red" };
     if (lower.includes("deploymentnotfound") || lower.includes("404"))
