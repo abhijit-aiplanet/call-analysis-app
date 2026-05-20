@@ -1,0 +1,36 @@
+# Fly.io deploy config. Usage:
+#   1. fly auth login
+#   2. cd backend && fly launch (it will detect this file; answer "y" to all prompts)
+#   3. fly secrets set ELEVENLABS_API_KEY=... AZURE_OPENAI_API_KEY=... AZURE_OPENAI_ENDPOINT=...
+#   4. fly deploy
+# Auto-scales to 0 on idle (free); spins up on incoming traffic.
+
+app = "call-analysis-pipeline-api"
+primary_region = "bom"   # Mumbai — closest to ElevenLabs India residency endpoint
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  AZURE_OPENAI_API_VERSION = "2024-12-01-preview"
+  AZURE_DEPLOYMENT = "gpt-4o-mini"
+  # ALLOWED_ORIGINS set via `fly secrets set` after frontend deploy
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.checks]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

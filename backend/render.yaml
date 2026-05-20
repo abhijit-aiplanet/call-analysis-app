@@ -1,0 +1,37 @@
+# Render.com Blueprint — recommended path for this backend.
+# Push the monorepo to GitHub, then in Render:
+#   New → Blueprint → point at this repo → select backend/render.yaml
+# Render will read this file and provision the service.
+#
+# REMEMBER to set the secret env vars in the Render dashboard after first deploy
+# (Render won't read secrets from this file for security):
+#   ELEVENLABS_API_KEY, AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT
+#
+# Free tier works for testing (cold-starts, 750h/mo). Starter ($7/mo) for production.
+
+services:
+  - type: web
+    name: call-analysis-pipeline-api
+    runtime: docker
+    plan: starter            # change to "free" for testing
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    rootDir: backend
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: AZURE_OPENAI_API_VERSION
+        value: 2024-12-01-preview
+      - key: AZURE_DEPLOYMENT
+        value: gpt-4o-mini
+      - key: ALLOWED_ORIGINS
+        # CHANGE THIS to your real Vercel URL after frontend deploy.
+        # Example: https://call-analysis.vercel.app
+        value: "*"
+      # Secrets — set these via the Render dashboard, NOT here:
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_API_KEY
+        sync: false
+      - key: AZURE_OPENAI_ENDPOINT
+        sync: false
