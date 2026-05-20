@@ -91,19 +91,42 @@ We recommend **Vercel for the frontend** and **Render for the backend**. Both ha
 
 > ⚠️ **A note on Vercel for the backend**: Vercel's serverless runtime is stateless and per-request (10–60s timeout). Our batch system uses in-memory state + background threads, so it doesn't fit Vercel's model. Run the backend on a long-lived host (Render / Railway / Fly / any VPS) and keep Vercel for the frontend.
 
-### Step 1 — Deploy the backend on Render
+### Step 1 — Deploy the backend on Render (free tier)
 
-1. Push this repo to GitHub.
-2. Go to [render.com](https://render.com) → **New** → **Blueprint**.
-3. Connect the repo. Render will auto-detect [`backend/render.yaml`](backend/render.yaml).
-4. After the first deploy, go to the service's **Environment** tab and set the **secrets** (Render doesn't read them from the YAML for security):
-   - `ELEVENLABS_API_KEY`
-   - `AZURE_OPENAI_API_KEY`
-   - `AZURE_OPENAI_ENDPOINT`
-5. Once deployed, copy the URL (e.g. `https://call-analysis-pipeline-api.onrender.com`) — you'll need it for the frontend.
-6. **Recommended**: set `ALLOWED_ORIGINS` to your frontend's URL after step 2 (initially `*` for testing, then tighten).
+**Note**: Render's *Blueprint* (auto-deploy from `render.yaml`) requires a paid plan. On the **free tier**, use the **Web Service** path — it's manual but takes ~3 minutes. Both `render.yaml` and Dockerfile are in the repo if you upgrade later; neither is required for the manual path.
 
-Free tier sleeps after 15 min idle (cold-start ~30s). Starter ($7/mo) is always-on and recommended for production.
+1. Push this repo to GitHub (you've already done this).
+2. Go to [dashboard.render.com](https://dashboard.render.com) → **New +** → **Web Service**.
+3. **Connect a repository** → pick `call-analysis-app`. (First time: authorize Render to read your GitHub.)
+4. Fill in:
+   - **Name**: `call-analysis-pipeline-api` (or anything you like)
+   - **Region**: **Singapore** (lowest latency for Indian users; or **Frankfurt** / **Oregon**)
+   - **Branch**: `main`
+   - **Root Directory**: `backend`
+   - **Runtime**: **Python 3**
+   - **Build Command**: `pip install -r requirements.txt`
+   - **Start Command**: `uvicorn api:app --host 0.0.0.0 --port $PORT`
+   - **Instance Type**: **Free**
+5. Scroll to **Environment Variables** → add these (paste from your `backend/.env`):
+   | Key | Value |
+   |---|---|
+   | `ELEVENLABS_API_KEY` | (your ElevenLabs key) |
+   | `AZURE_OPENAI_API_KEY` | (your Azure key) |
+   | `AZURE_OPENAI_ENDPOINT` | `https://your-resource.openai.azure.com/` |
+   | `AZURE_OPENAI_API_VERSION` | `2024-12-01-preview` |
+   | `AZURE_DEPLOYMENT` | `gpt-4o-mini` |
+   | `ALLOWED_ORIGINS` | `*` (tighten to your Vercel URL after step 2) |
+6. Click **Create Web Service**. Render builds + deploys (~3-5 min first time).
+7. Copy the URL it gives you (e.g. `https://call-analysis-pipeline-api.onrender.com`).
+8. Smoke-test: `curl https://your-render-url.onrender.com/health` should return `credentials_loaded.elevenlabs=true`.
+
+**Free tier caveats**:
+- Sleeps after 15 min idle → first request after sleep takes 30-50s (cold start)
+- 750 hours/month free (enough for one always-pinged service)
+- 512 MB RAM (plenty for our use case)
+- For production / no-cold-starts, upgrade to **Starter ($7/mo)**
+
+> Note: If you later upgrade to a paid plan and want the Blueprint flow, the included [`backend/render.yaml`](backend/render.yaml) is ready to use.
 
 ### Step 2 — Deploy the frontend on Vercel
 
