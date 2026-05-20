@@ -7,6 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Sparkles, MessageSquare, ListChecks, Tag, ArrowLeft,
   FileText, Brain, Heart, Users, ShieldAlert, DollarSign,
+  AlertTriangle, XCircle,
 } from "lucide-react";
 
 import { createBatch, getBatch } from "./api";
@@ -129,6 +130,12 @@ const CallAnalysisPipeline = () => {
 
             {pageState === "done" && job.aggregate_cost && (
               <BatchSummary job={job} />
+            )}
+
+            {/* Failed-files panel — visible whenever any file errored, so the user
+                always sees the actual error message instead of just "1 failed". */}
+            {pageState === "done" && job.failed_count > 0 && (
+              <FailedFilesPanel job={job} />
             )}
 
             {/* Once we have at least one ok file, show per-file selector + details */}
@@ -409,6 +416,83 @@ const TranscriptView = ({ result }: { result: AnalysisRecord }) => {
                       )}
                     </div>
                   )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+// ─── Failed Files Panel ─────────────────────────────────────────────────────
+// Shown when one or more files in the batch errored, so the user can see the
+// actual reason (e.g. ElevenLabs quota_exceeded, Azure 500, invalid audio, ...)
+// instead of just seeing zeros in the BatchSummary.
+const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
+  const failed = job.files.filter((f) => f.status === "error");
+  if (failed.length === 0) return null;
+
+  // Detect common error patterns and surface friendly explanations.
+  const friendly = (err: string | null): { hint: string; tone: "red" | "amber" } | null => {
+    if (!err) return null;
+    const lower = err.toLowerCase();
+    if (lower.includes("quota_exceeded") || lower.includes("credits remaining"))
+      return { hint: "ElevenLabs Scribe quota exhausted. Top up credits at elevenlabs.io/app/account.", tone: "red" };
+    if (lower.includes("deploymentnotfound") || lower.includes("404"))
+      return { hint: "Azure OpenAI deployment not reachable — transient. Retry usually fixes it.", tone: "amber" };
+    if (lower.includes("internalserver") || lower.includes("500"))
+      return { hint: "Azure / vendor 500. Transient. Click 'New Batch' and retry.", tone: "amber" };
+    if (lower.includes("invalid_request") || lower.includes("invalid audio"))
+      return { hint: "Audio file may be empty, corrupt, or in an unsupported format.", tone: "red" };
+    if (lower.includes("timeout") || lower.includes("connectionerror"))
+      return { hint: "Network timeout — possibly cold-start on the backend. Retry.", tone: "amber" };
+    return null;
+  };
+
+  return (
+    <Card className="rounded-2xl border-red-200 bg-red-50/50 shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2.5 text-base font-semibold text-red-900">
+          <AlertTriangle className="size-5 text-red-600" />
+          <span>
+            {failed.length} of {job.file_count} file{failed.length !== 1 ? "s" : ""} failed
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2.5">
+          {failed.map((f, i) => {
+            const f_hint = friendly(f.error);
+            return (
+              <div key={i} className="bg-white border border-red-100 rounded-lg p-3">
+                <div className="flex items-start gap-2.5">
+                  <XCircle className="size-4 text-red-500 mt-0.5 flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-800 truncate">{f.filename}</div>
+                    {f_hint && (
+                      <div
+                        className={`mt-1.5 px-2.5 py-1.5 rounded text-xs ${
+                          f_hint.tone === "red"
+                            ? "bg-red-100 text-red-800 border border-red-200"
+                            : "bg-amber-100 text-amber-800 border border-amber-200"
+                        }`}
+                      >
+                        {f_hint.hint}
+                      </div>
+                    )}
+                    {f.error && (
+                      <details className="mt-1.5">
+                        <summary className="text-[11px] text-slate-500 cursor-pointer hover:text-slate-700 select-none">
+                          show full error
+                        </summary>
+                        <pre className="text-[10px] text-red-700 font-mono mt-1 whitespace-pre-wrap break-words bg-slate-50 p-2 rounded border border-slate-200">
+                          {f.error}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
                 </div>
               </div>
             );
