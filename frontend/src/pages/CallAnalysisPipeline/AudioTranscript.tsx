@@ -152,12 +152,12 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
 
       {/* Audio player surface */}
       {audioUrl && (
-        <div className="bg-gradient-to-r from-slate-50 to-white border-y border-slate-200 px-4 py-3 space-y-2">
+        <div className="bg-gradient-to-r from-emerald-50/40 via-slate-50 to-white border-y border-slate-200 px-4 py-3.5 space-y-2.5">
           <audio ref={audioRef} src={audioUrl} preload="metadata" className="hidden" muted={muted} />
 
           {/* Progress bar — clickable to seek */}
           <div
-            className="group relative h-2 bg-slate-200 rounded-full cursor-pointer"
+            className="group relative h-2.5 bg-slate-200 rounded-full cursor-pointer"
             onClick={(e) => {
               if (!duration) return;
               const rect = e.currentTarget.getBoundingClientRect();
@@ -166,11 +166,11 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
             }}
           >
             <div
-              className="absolute inset-y-0 left-0 bg-emerald-500 rounded-full transition-[width] duration-200 ease-out"
+              className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-[width] duration-200 ease-out shadow-sm"
               style={{ width: `${progressPct}%` }}
             />
             <div
-              className="absolute -top-1 size-4 -ml-2 rounded-full bg-emerald-600 ring-2 ring-white shadow opacity-0 group-hover:opacity-100 transition-opacity"
+              className="absolute -top-1 size-4 -ml-2 rounded-full bg-emerald-600 ring-2 ring-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
               style={{ left: `${progressPct}%` }}
             />
           </div>
@@ -260,10 +260,10 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
                 key={i}
                 ref={(el) => { itemRefs.current[i] = el; }}
                 onClick={() => seek(t)}
-                className={`flex gap-3 pl-3 py-2 border-l-2 rounded-r-lg transition-all cursor-pointer ${
+                className={`flex gap-3 pl-3 py-2 border-l-[3px] rounded-r-lg transition-all duration-200 cursor-pointer ${
                   isActive
-                    ? "bg-emerald-50 border-l-emerald-500 ring-1 ring-emerald-300 shadow-sm"
-                    : `${borderColorFor(i)} bg-slate-50/40 hover:bg-slate-50`
+                    ? "bg-gradient-to-r from-emerald-100/80 to-emerald-50/40 border-l-emerald-500 ring-1 ring-emerald-300 shadow-md scale-[1.005]"
+                    : `${borderColorFor(i)} bg-slate-50/40 hover:bg-slate-100/60 hover:translate-x-0.5`
                 }`}
               >
                 <div className="flex-shrink-0 text-[11px] font-mono pt-0.5 w-12 tabular-nums">

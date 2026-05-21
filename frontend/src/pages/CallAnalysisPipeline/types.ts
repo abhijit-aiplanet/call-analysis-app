@@ -27,7 +27,12 @@ export interface LLMCost {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // Azure prompt-caching: tokens that were served from cache (billed at 50% off).
+  // Present when the deployment supports prompt_tokens_details.cached_tokens.
+  cached_tokens?: number;
   cost_usd_input: number;
+  cost_usd_input_uncached?: number;
+  cost_usd_input_cached?: number;
   cost_usd_output: number;
   cost_usd_total: number;
   wall_time_s?: number;

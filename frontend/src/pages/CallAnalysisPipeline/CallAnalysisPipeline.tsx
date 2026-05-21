@@ -108,7 +108,7 @@ const CallAnalysisPipeline = () => {
   return (
     <Layout
       title="RCU AI Verification"
-      description="Bajaj Auto Credit · Risk Containment Unit · automated Telephonic Confirmation. Soniox stt-async-v4 STT + Triage + 4 specialists + Decision Agent + Reflection. Outputs verdict (Positive / Negative / Critical), disposition, confidence, and routing — all in under 5 minutes per call."
+      description="Bajaj Auto Credit · Risk Containment Unit · automated Telephonic Confirmation. Soniox stt-async-v4 STT + Triage + 3 specialists + Decision Agent + Reflection (with self-critique). Outputs verdict (Positive / Negative / Critical), disposition, confidence, evidence quotes, and routing — typically under a minute per call."
       category="Risk Containment Unit"
     >
       <div className="space-y-6 font-inter">
@@ -214,28 +214,35 @@ const PerFileDetail = ({ result, audioUrl, activeTab, setActiveTab }: PerFileDet
 
   return (
     <div className="space-y-4">
-      {/* Always-visible verdict strip */}
-      <Card className={`rounded-2xl border-2 ${verdictTone.border} ${verdictTone.bg.replace("100", "50/50")}`}>
-        <CardContent className="p-4 flex items-center gap-3 flex-wrap">
-          <Badge className={`${verdictTone.bg} ${verdictTone.text} ${verdictTone.border} font-bold text-base px-4 py-1.5`}>
+      {/* Always-visible verdict strip — polished hero version */}
+      <Card
+        className={`rounded-2xl border-2 ${verdictTone.border} ${verdictTone.bg.replace("100", "50/50")} shadow-sm ring-1 ${
+          verdict.verdict === "Critical" ? "ring-red-100" :
+          verdict.verdict === "Negative" ? "ring-amber-100" :
+          verdict.verdict === "Positive" ? "ring-emerald-100" : "ring-slate-100"
+        }`}
+      >
+        <CardContent className="p-4 flex items-center gap-2.5 flex-wrap">
+          <Badge className={`${verdictTone.bg} ${verdictTone.text} ${verdictTone.border} font-bold text-base px-4 py-1.5 shadow-sm`}>
             {verdict.verdict === "Critical" && <ShieldAlert className="size-4 mr-1.5" />}
             {verdict.verdict === "Negative" && <AlertTriangle className="size-4 mr-1.5" />}
             {verdict.verdict === "Positive" && <CheckCircle2 className="size-4 mr-1.5" />}
             {verdict.verdict || "—"}
           </Badge>
-          <Badge variant="outline" className="bg-white font-medium text-slate-800">
+          <Badge variant="outline" className="bg-white font-medium text-slate-800 text-sm">
             {verdict.disposition || "—"}
           </Badge>
           <Badge variant="outline" className="bg-white text-slate-700">
-            Caller: {verdict.caller_type || "Unknown"}
+            <UserCheck className="size-3 mr-1" />
+            {verdict.caller_type || "Unknown"}
           </Badge>
           <Badge className={`${routingTone.bg} ${routingTone.text} font-medium`}>
             <Gavel className="size-3 mr-1" />
             {routingTone.label}
           </Badge>
-          <div className="ml-auto flex items-center gap-2 flex-wrap text-[11px]">
+          <div className="ml-auto flex items-center gap-1.5 flex-wrap text-[11px]">
             <Badge variant="outline" className="bg-white font-mono">
-              {result.audio_meta.language_code}
+              {result.audio_meta.language_code || "?"}
               {result.audio_meta.language_probability != null && (
                 <span className="ml-1 text-slate-400">
                   {(result.audio_meta.language_probability * 100).toFixed(0)}%
@@ -243,9 +250,9 @@ const PerFileDetail = ({ result, audioUrl, activeTab, setActiveTab }: PerFileDet
               )}
             </Badge>
             <Badge variant="outline" className="bg-white">
-              {result.audio_meta.audio_duration_s.toFixed(0)}s · {result.audio_meta.num_speakers} speakers
+              {result.audio_meta.audio_duration_s.toFixed(0)}s · {result.audio_meta.num_speakers} spk
             </Badge>
-            <Badge variant="outline" className="bg-white font-mono">
+            <Badge variant="outline" className="bg-white font-mono text-emerald-700 border-emerald-200">
               {inr(result.unified_cost.total_usd)}
             </Badge>
           </div>
@@ -319,19 +326,34 @@ const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
   const friendly = (err: string | null): { hint: string; tone: "red" | "amber" } | null => {
     if (!err) return null;
     const lower = err.toLowerCase();
+    // Soniox-side
+    if (lower.includes("soniox") && lower.includes("502"))
+      return { hint: "Soniox upstream 502 — usually a transient glitch. Retry the file.", tone: "amber" };
+    if (lower.includes("soniox") && (lower.includes("401") || lower.includes("unauthor")))
+      return { hint: "Soniox API key rejected. Check SONIOX_API_KEY on the backend.", tone: "red" };
+    if (lower.includes("soniox_api_key is not set"))
+      return { hint: "Backend is missing SONIOX_API_KEY. Add it in the deployment environment.", tone: "red" };
+    if (lower.includes("soniox transcription timed out"))
+      return { hint: "Soniox took >10 min to finish. Audio may be too long or queue is backed up.", tone: "amber" };
+    if (lower.includes("soniox transcription errored"))
+      return { hint: "Soniox reported a hard error on this file (corrupt/empty audio likely).", tone: "red" };
+    // ElevenLabs fallback path
     if (lower.includes("detected_unusual_activity") || lower.includes("free tier usage disabled"))
       return {
-        hint: "ElevenLabs disabled free-tier access for this key. Upgrade to Starter ($5/mo) at elevenlabs.io/app/subscription.",
+        hint: "ElevenLabs disabled free-tier access for this key. Upgrade to Starter at elevenlabs.io/app/subscription.",
         tone: "red",
       };
     if (lower.includes("quota_exceeded") || lower.includes("credits remaining"))
       return { hint: "ElevenLabs Scribe quota exhausted. Top up credits.", tone: "red" };
+    // Common
+    if (lower.includes("no utterances"))
+      return { hint: "STT returned no utterances — the audio file is likely silent, empty, or unreadable.", tone: "red" };
     if (lower.includes("deploymentnotfound") || lower.includes("404"))
       return { hint: "Azure OpenAI deployment hiccup — retry usually fixes it.", tone: "amber" };
     if (lower.includes("internalserver") || lower.includes("500"))
       return { hint: "Azure / vendor 500. Retry.", tone: "amber" };
     if (lower.includes("invalid_request") || lower.includes("invalid audio"))
-      return { hint: "Audio file may be empty, corrupt, or unsupported format.", tone: "red" };
+      return { hint: "Audio file may be empty, corrupt, or in an unsupported format.", tone: "red" };
     if (lower.includes("timeout") || lower.includes("connectionerror"))
       return { hint: "Network timeout — possibly cold-start. Retry.", tone: "amber" };
     return null;

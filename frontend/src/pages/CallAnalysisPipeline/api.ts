@@ -6,7 +6,7 @@ import type {
   BatchJob,
 } from "./types";
 
-const API_BASE_URL =
+export const API_BASE_URL =
   import.meta.env.VITE_CALL_ANALYSIS_API_URL || "http://localhost:8007";
 
 export interface PricingResponse {
