@@ -215,32 +215,57 @@ def _run_specialist(client, deployment, name, transcript_for_prompt):
     return name, result, cost
 
 
+def _compact_specialists_for_synthesis(specialist_results):
+    """Strip bulky fields the Decision / Reflection agents don't need.
+
+    The biggest offender is `per_utterance` (one entry per utt, ~600 tokens
+    on long calls). Decision and Reflection already receive the transcript
+    separately, so they don't need per-utterance tags re-passed — only the
+    aggregate behavioural signals.
+    """
+    compact = {}
+    for name, out in specialist_results.items():
+        if not isinstance(out, dict):
+            compact[name] = out
+            continue
+        # Shallow copy so we don't mutate the original
+        c = dict(out)
+        # Conversation behavior: drop per_utterance, keep aggregates
+        if name == "conversation_behavior":
+            c.pop("per_utterance", None)
+        compact[name] = c
+    return compact
+
+
 def _run_synthesizer(client, deployment, transcript_for_prompt, specialist_results):
-    body = {
-        "specialist_1_information_extraction":  specialist_results["information_extraction"],
-        "specialist_2_identity_verification":   specialist_results["identity_verification"],
-        "specialist_3_fraud_risk":              specialist_results["fraud_risk"],
-        "specialist_4_conversation_behavior":   specialist_results["conversation_behavior"],
+    body = _compact_specialists_for_synthesis(specialist_results)
+    # Renumbered keys for readability in the prompt
+    body_renamed = {
+        "info_extraction":  body.get("information_extraction"),
+        "identity":         body.get("identity_verification"),
+        "fraud_risk":       body.get("fraud_risk"),
+        "conversation":     body.get("conversation_behavior"),
     }
+    # Compact JSON (no indent) saves significant whitespace tokens
     user = (
-        f"TRANSCRIPT (code-mixed Indian languages):\n\n{transcript_for_prompt}\n\n"
-        f"SPECIALIST REPORTS:\n\n{json.dumps(body, ensure_ascii=False, indent=2)}\n\n"
-        f"Apply the chain-of-thought reasoning, disambiguation examples and "
-        f"confidence calibration rules. Return ONLY the required JSON."
+        f"TRANSCRIPT:\n{transcript_for_prompt}\n\n"
+        f"SPECIALISTS:\n{json.dumps(body_renamed, ensure_ascii=False, separators=(',', ':'))}\n\n"
+        f"Apply chain-of-thought, disambiguation, and confidence caps. Return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_SYNTHESIZER, user, max_tokens=2500)
     return result, cost
 
 
 def _run_reflection(client, deployment, transcript_for_prompt, specialist_results, decision_output):
+    compact_specs = _compact_specialists_for_synthesis(specialist_results)
     body = {
-        "specialist_outputs": specialist_results,
-        "decision_agent_output": decision_output,
+        "specialists": compact_specs,
+        "decision":    decision_output,
     }
     user = (
-        f"TRANSCRIPT:\n\n{transcript_for_prompt}\n\n"
-        f"PRIOR ANALYSIS:\n\n{json.dumps(body, ensure_ascii=False, indent=2)}\n\n"
-        f"Critically review per your checklist. Return ONLY the required JSON."
+        f"TRANSCRIPT:\n{transcript_for_prompt}\n\n"
+        f"PRIOR ANALYSIS:\n{json.dumps(body, ensure_ascii=False, separators=(',', ':'))}\n\n"
+        f"Critically review per the checklist. Return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_REFLECTION, user, max_tokens=1200)
     return result, cost
