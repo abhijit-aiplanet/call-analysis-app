@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   MessageSquare, Tag, Play, Pause, Rewind, FastForward,
-  Subtitles, Volume2, VolumeX,
+  Subtitles, Volume2, VolumeX, AlertCircle, Target,
 } from "lucide-react";
 import type { AnalysisRecord } from "./types";
 
@@ -13,8 +13,11 @@ interface Props {
   audioUrl: string | null;
 }
 
-/** Subtitle-style transcript: plays audio with synced utterance highlight,
- *  auto-scrolls to active line, click-to-seek on any utterance. */
+type AudioStatus = "idle" | "loading" | "ready" | "error";
+
+/** Subtitle-style transcript with a STICKY audio player at the top.
+ *  Auto-scroll moves only the transcript list (not the page) so the
+ *  player remains reachable at all times. */
 export const AudioTranscript = ({ result, audioUrl }: Props) => {
   const utterances = result.stage_1_stt.utterances;
   const behaviorOut = result.stage_2_verification.specialists?.conversation_behavior?.output as
@@ -34,15 +37,16 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
   const [muted, setMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus>(audioUrl ? "loading" : "idle");
+  const [audioError, setAudioError] = useState<string | null>(null);
 
-  // Wire audio event listeners
+  // Wire audio event listeners — covers playback state, metadata, and errors.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     const onTime = () => {
       setCurrentTime(audio.currentTime);
       const t = audio.currentTime;
-      // Active utterance = the latest one whose start ≤ t
       let idx = -1;
       for (let i = 0; i < utterances.length; i++) {
         const start = utterances[i].start_s ?? 0;
@@ -51,33 +55,75 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
       }
       setActiveIdx((cur) => (cur !== idx ? idx : cur));
     };
-    const onMeta = () => setDuration(audio.duration || 0);
+    const onMeta = () => {
+      setDuration(audio.duration || 0);
+      setAudioStatus("ready");
+    };
+    const onCanPlay = () => setAudioStatus("ready");
+    const onErr = () => {
+      setAudioStatus("error");
+      const err = audio.error;
+      const code = err?.code;
+      const msg =
+        code === 1 ? "Playback aborted" :
+        code === 2 ? "Network error fetching audio" :
+        code === 3 ? "Audio decoding failed — file may be corrupt or unsupported format" :
+        code === 4 ? "Audio source not supported by the browser" :
+        "Audio failed to load";
+      setAudioError(msg);
+    };
     const onPlay = () => setIsPlaying(true);
     const onPause = () => setIsPlaying(false);
     const onEnded = () => setIsPlaying(false);
     audio.addEventListener("timeupdate", onTime);
     audio.addEventListener("loadedmetadata", onMeta);
+    audio.addEventListener("canplay", onCanPlay);
+    audio.addEventListener("error", onErr);
     audio.addEventListener("play", onPlay);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnded);
     return () => {
       audio.removeEventListener("timeupdate", onTime);
       audio.removeEventListener("loadedmetadata", onMeta);
+      audio.removeEventListener("canplay", onCanPlay);
+      audio.removeEventListener("error", onErr);
       audio.removeEventListener("play", onPlay);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
     };
   }, [utterances]);
 
-  // Auto-scroll active utterance into view while playing
+  // When audioUrl changes (user switches file), reset state + force reload
+  useEffect(() => {
+    if (!audioUrl) {
+      setAudioStatus("idle");
+      setDuration(0);
+      setCurrentTime(0);
+      setActiveIdx(-1);
+      return;
+    }
+    setAudioStatus("loading");
+    setAudioError(null);
+    // Force the element to re-evaluate the src (Blob URL or otherwise)
+    requestAnimationFrame(() => audioRef.current?.load());
+  }, [audioUrl]);
+
+  // Auto-scroll active utterance into view — manually, only within the list
+  // container so the PAGE never scrolls (the previous scrollIntoView() called
+  // up the chain and dragged the whole window with it).
   useEffect(() => {
     if (!autoScroll || activeIdx < 0 || !isPlaying) return;
-    const el = itemRefs.current[activeIdx];
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const container = listRef.current;
+    const item = itemRefs.current[activeIdx];
+    if (!container || !item) return;
+    const cRect = container.getBoundingClientRect();
+    const iRect = item.getBoundingClientRect();
+    const itemTopInContainer = iRect.top - cRect.top + container.scrollTop;
+    const target = itemTopInContainer - (cRect.height / 2) + (iRect.height / 2);
+    container.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   }, [activeIdx, isPlaying, autoScroll]);
 
-  // Apply playback rate on change
+  // Apply playback rate
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = playbackRate;
   }, [playbackRate]);
@@ -92,14 +138,32 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
   const togglePlay = () => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (audio.paused) audio.play().catch(() => {});
-    else audio.pause();
+    if (audio.paused) {
+      audio.play().catch((err) => {
+        setAudioStatus("error");
+        setAudioError(`Browser refused to play audio: ${err?.message || err}`);
+      });
+    } else {
+      audio.pause();
+    }
   };
 
   const skip = (delta: number) => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.currentTime = Math.max(0, Math.min(audio.currentTime + delta, duration || audio.currentTime + delta));
+  };
+
+  // Jump back to the active utterance — useful when auto-scroll is off
+  const scrollToActive = () => {
+    const container = listRef.current;
+    const item = itemRefs.current[activeIdx];
+    if (!container || !item) return;
+    const cRect = container.getBoundingClientRect();
+    const iRect = item.getBoundingClientRect();
+    const itemTopInContainer = iRect.top - cRect.top + container.scrollTop;
+    const target = itemTopInContainer - (cRect.height / 2) + (iRect.height / 2);
+    container.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
   };
 
   const borderColorFor = (idx: number): string => {
@@ -130,7 +194,8 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
 
   return (
-    <Card className="rounded-2xl border-slate-200 overflow-hidden">
+    // overflow-visible (not overflow-hidden) is REQUIRED for `sticky` children to work.
+    <Card className="rounded-2xl border-slate-200 overflow-visible">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2.5 text-base font-semibold">
           <MessageSquare className="size-4 text-purple-600" />
@@ -150,101 +215,152 @@ export const AudioTranscript = ({ result, audioUrl }: Props) => {
         )}
       </CardHeader>
 
-      {/* Audio player surface */}
-      {audioUrl && (
-        <div className="bg-gradient-to-r from-emerald-50/40 via-slate-50 to-white border-y border-slate-200 px-4 py-3.5 space-y-2.5">
-          <audio ref={audioRef} src={audioUrl} preload="metadata" className="hidden" muted={muted} />
-
-          {/* Progress bar — clickable to seek */}
-          <div
-            className="group relative h-2.5 bg-slate-200 rounded-full cursor-pointer"
-            onClick={(e) => {
-              if (!duration) return;
-              const rect = e.currentTarget.getBoundingClientRect();
-              const ratio = (e.clientX - rect.left) / rect.width;
-              seek(ratio * duration);
-            }}
-          >
-            <div
-              className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-[width] duration-200 ease-out shadow-sm"
-              style={{ width: `${progressPct}%` }}
+      {/* ── STICKY AUDIO PLAYER ─────────────────────────────────────────
+          top-[68px] sits just below the Layout's sticky brand header (~64px tall).
+          z-20 keeps it under the brand header (z-40) but over everything else. */}
+      {audioUrl ? (
+        <div className="sticky top-[68px] z-20 -mt-px">
+          <div className="bg-gradient-to-r from-emerald-50/60 via-white to-slate-50/60 backdrop-blur-sm border-y border-slate-200 px-4 py-3.5 space-y-2.5 shadow-sm">
+            <audio
+              ref={audioRef}
+              src={audioUrl}
+              preload="auto"
+              className="hidden"
+              muted={muted}
             />
-            <div
-              className="absolute -top-1 size-4 -ml-2 rounded-full bg-emerald-600 ring-2 ring-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
-              style={{ left: `${progressPct}%` }}
-            />
-          </div>
 
-          {/* Controls row */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button size="sm" variant="ghost" onClick={() => skip(-5)} className="h-8 w-8 p-0" aria-label="Back 5s">
-              <Rewind className="size-4" />
-            </Button>
-            <Button
-              size="sm"
-              onClick={togglePlay}
-              className="h-9 w-9 p-0 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full"
-              aria-label={isPlaying ? "Pause" : "Play"}
-            >
-              {isPlaying ? <Pause className="size-4" /> : <Play className="size-4 ml-0.5" />}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => skip(5)} className="h-8 w-8 p-0" aria-label="Forward 5s">
-              <FastForward className="size-4" />
-            </Button>
-
-            <span className="text-xs font-mono text-slate-600 tabular-nums ml-1">
-              {fmtTime(currentTime)} <span className="text-slate-400">/ {fmtTime(duration)}</span>
-            </span>
-
-            <div className="ml-auto flex items-center gap-1.5">
-              {/* Playback speed */}
-              <div className="flex items-center gap-0.5 bg-white rounded-md border border-slate-200 p-0.5">
-                {[0.75, 1, 1.25, 1.5, 2].map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setPlaybackRate(r)}
-                    className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                      playbackRate === r
-                        ? "bg-slate-800 text-white"
-                        : "text-slate-500 hover:text-slate-800"
-                    }`}
-                  >
-                    {r}x
-                  </button>
-                ))}
+            {audioStatus === "error" && (
+              <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-2.5 py-1.5">
+                <AlertCircle className="size-3.5 flex-shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-medium">Audio playback unavailable</div>
+                  <div className="text-red-600/80">{audioError || "Unknown error"}</div>
+                  <div className="text-[10px] text-red-500/80 mt-0.5">
+                    Tip: the audio file lives only in your current browser session — if you reloaded the page since uploading, the Blob URL is gone. Re-upload to play.
+                  </div>
+                </div>
               </div>
+            )}
 
-              {/* Auto-scroll toggle */}
+            {/* Progress bar — clickable to seek */}
+            <div
+              className={`group relative h-2.5 rounded-full cursor-pointer transition-colors ${
+                audioStatus === "error" ? "bg-red-100" : "bg-slate-200"
+              }`}
+              onClick={(e) => {
+                if (!duration || audioStatus === "error") return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const ratio = (e.clientX - rect.left) / rect.width;
+                seek(ratio * duration);
+              }}
+            >
+              <div
+                className="absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-[width] duration-200 ease-out shadow-sm"
+                style={{ width: `${progressPct}%` }}
+              />
+              <div
+                className="absolute -top-1 size-4 -ml-2 rounded-full bg-emerald-600 ring-2 ring-white shadow-md opacity-0 group-hover:opacity-100 transition-opacity"
+                style={{ left: `${progressPct}%` }}
+              />
+            </div>
+
+            {/* Controls row */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button size="sm" variant="ghost" onClick={() => skip(-5)} className="h-8 w-8 p-0" aria-label="Back 5s">
+                <Rewind className="size-4" />
+              </Button>
               <Button
                 size="sm"
-                variant={autoScroll ? "default" : "outline"}
-                onClick={() => setAutoScroll((v) => !v)}
-                className={`h-7 px-2 text-[10px] ${
-                  autoScroll ? "bg-purple-600 hover:bg-purple-700 text-white" : ""
-                }`}
-                title="Auto-scroll transcript while playing"
+                onClick={togglePlay}
+                disabled={audioStatus === "error"}
+                className="h-9 w-9 p-0 bg-emerald-600 hover:bg-emerald-700 text-white rounded-full disabled:opacity-50"
+                aria-label={isPlaying ? "Pause" : "Play"}
               >
-                <Subtitles className="size-3 mr-1" />
-                {autoScroll ? "Auto" : "Manual"}
+                {isPlaying ? <Pause className="size-4" /> : <Play className="size-4 ml-0.5" />}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => skip(5)} className="h-8 w-8 p-0" aria-label="Forward 5s">
+                <FastForward className="size-4" />
               </Button>
 
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setMuted((v) => !v)}
-                className="h-8 w-8 p-0"
-                aria-label={muted ? "Unmute" : "Mute"}
-              >
-                {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
-              </Button>
+              <span className="text-xs font-mono text-slate-600 tabular-nums ml-1">
+                {fmtTime(currentTime)} <span className="text-slate-400">/ {fmtTime(duration)}</span>
+              </span>
+
+              {audioStatus === "loading" && (
+                <Badge variant="outline" className="bg-white text-[10px] text-slate-500 font-normal">
+                  loading…
+                </Badge>
+              )}
+              {audioStatus === "ready" && duration > 0 && (
+                <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-[10px] font-normal">
+                  ready
+                </Badge>
+              )}
+
+              <div className="ml-auto flex items-center gap-1.5">
+                {/* Jump-to-active button */}
+                {activeIdx >= 0 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={scrollToActive}
+                    className="h-7 px-2 text-[10px]"
+                    title="Scroll transcript to the currently-playing line"
+                  >
+                    <Target className="size-3 mr-1" />
+                    Jump to active
+                  </Button>
+                )}
+
+                {/* Playback speed */}
+                <div className="flex items-center gap-0.5 bg-white rounded-md border border-slate-200 p-0.5">
+                  {[0.75, 1, 1.25, 1.5, 2].map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setPlaybackRate(r)}
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                        playbackRate === r
+                          ? "bg-slate-800 text-white"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      {r}x
+                    </button>
+                  ))}
+                </div>
+
+                {/* Auto-scroll toggle */}
+                <Button
+                  size="sm"
+                  variant={autoScroll ? "default" : "outline"}
+                  onClick={() => setAutoScroll((v) => !v)}
+                  className={`h-7 px-2 text-[10px] ${
+                    autoScroll ? "bg-purple-600 hover:bg-purple-700 text-white" : ""
+                  }`}
+                  title="Auto-scroll transcript while playing"
+                >
+                  <Subtitles className="size-3 mr-1" />
+                  {autoScroll ? "Auto" : "Manual"}
+                </Button>
+
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setMuted((v) => !v)}
+                  className="h-8 w-8 p-0"
+                  aria-label={muted ? "Unmute" : "Mute"}
+                >
+                  {muted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
-      )}
-
-      {!audioUrl && (
-        <div className="bg-slate-50 border-y border-slate-200 px-4 py-2 text-xs text-slate-500">
-          Audio playback not available for this call (file not retained in the browser session).
+      ) : (
+        <div className="bg-slate-50 border-y border-slate-200 px-4 py-2 text-xs text-slate-500 flex items-center gap-2">
+          <AlertCircle className="size-3.5 text-slate-400" />
+          Audio playback not available — file isn't in the current browser session.
+          You can still click any utterance to follow the transcript visually.
         </div>
       )}
 
