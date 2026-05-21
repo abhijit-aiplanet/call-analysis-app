@@ -458,12 +458,12 @@ def _compact_specialists_for_synthesis(specialist_results):
 
 def _run_synthesizer(client, deployment, transcript_for_prompt, specialist_results):
     body = _compact_specialists_for_synthesis(specialist_results)
-    # Renumbered keys for readability in the prompt
+    # Renumbered keys for readability in the prompt. v3 has a merged
+    # identity_and_extraction specialist (was two separate ones in v2).
     body_renamed = {
-        "info_extraction":  body.get("information_extraction"),
-        "identity":         body.get("identity_verification"),
-        "fraud_risk":       body.get("fraud_risk"),
-        "conversation":     body.get("conversation_behavior"),
+        "identity_and_extraction": body.get("identity_and_extraction"),
+        "fraud_risk":              body.get("fraud_risk"),
+        "conversation":            body.get("conversation_behavior"),
     }
     # Compact JSON (no indent) saves significant whitespace tokens
     user = (
@@ -493,7 +493,13 @@ def _run_reflection(client, deployment, transcript_for_prompt, specialist_result
 # ─── Disposition → RCU-status enforcement ───────────────────────────────────
 # Canonical mapping (per Bajaj TC dispositions doc + prompts.py rubric).
 # Lowercased keys for normalisation-tolerant lookup.
+# Canonical disposition sets — synced verbatim with the customer's BACL
+# TC Dispositions xlsx (Applicant + Monnai + Co-applicant sheets) and the
+# Scope of Speech Analytics doc definitions.
 _CRITICAL_DISPOSITIONS = {
+    # Applicant-sheet Critical
+    "third party use",
+    "third party mobile no",
     "loan not taken",
     "loan cancelled",
     "call back suspicious",
@@ -505,13 +511,20 @@ _CRITICAL_DISPOSITIONS = {
     "information mismatch-customer demographics",
     "information mismatch - customer demographics",
     "rented residing less than 1 year",
+    # Monnai-sheet (Critical M / O / MO all roll up to "Critical")
     "monnai name mismatch",
     "monnai name belongs to third party",
     "mobile number belongs to monnai",
     "tenure less than 3 months",
+    "tenure less than 3months",
+    # Co-applicant-sheet Critical
     "person is not co-applicant",
+    "third party mobile number",
+    "mob no not use by coa not family",
 }
 _NEGATIVE_DISPOSITIONS = {
+    # Applicant-sheet Negative
+    "third party attending calls(family-close blood relative)",
     "third party attending calls (family-close blood relative)",
     "product mismatch",
     "refuse to share information- irate customer",
@@ -528,9 +541,15 @@ _NEGATIVE_DISPOSITIONS = {
     "no negative information suspicious",
     "driver is not co-applicant",
     "call back",
+    # Co-applicant-sheet Negative
+    "third party mobile no family close blood relative",
+    "mob no not use by coa family",
 }
 _POSITIVE_DISPOSITIONS = {
     "no negative information",
+    # Co-applicant-sheet Positive
+    "no negative information (includes-only enq)",
+    "app mob no use by coa family",
 }
 
 
@@ -565,6 +584,104 @@ def _enforce_disposition_consistency(output: dict) -> dict:
     if prior_verdict != status:
         out["verdict"] = status
         out["_verdict_corrected_from"] = prior_verdict
+    return out
+
+
+def _enforce_disposition_rules(
+    output: dict, specialist_results: dict,
+) -> dict:
+    """Deterministic post-hoc rules that the LLM keeps getting wrong despite
+    being in the prompt. Applied AFTER the Decision Agent + Reflection. These
+    are pure post-processing — they don't change the model's reasoning, just
+    correct the final disposition when a hard rule from the RCU_Context spec
+    fires unambiguously.
+
+    Two rules currently:
+
+      Rule R1 — "Rented Residing Less Than 1 Year" beats "Incomplete Information"
+        If the Identity check flags flag_rented_under_1_year=true AND caller
+        is Applicant AND the model picked "Incomplete Information" → upgrade
+        to "Rented Residing Less Than 1 Year" (Critical). Per the BACL spec,
+        this is an Applicant-only Critical disposition that the data clearly
+        warrants.
+
+      Rule R2 — 3W / commercial vehicle exception on "Driver is not co-applicant"
+        Per the Scope doc, the disposition is "Negative — except the owner is
+        fleet owner or vehicle is being used for business purpose." Auto-rickshaws
+        and any 3W are commercial-passenger by definition, so a driver
+        arrangement there is legitimate, not a fraud signal. If the model
+        picked this disposition and vehicle_type is 3W/Commercial/Car, drop
+        to "No Negative Information" (clean) unless other Critical signals
+        fire elsewhere.
+    """
+    if not isinstance(output, dict):
+        return output
+
+    # Aggregate signals from whichever specialist key produced them (v2 had two
+    # separate specialists; v3 merges them into identity_and_extraction)
+    ident = (
+        specialist_results.get("identity_and_extraction")
+        or specialist_results.get("identity_verification")
+        or {}
+    )
+    info = (
+        specialist_results.get("identity_and_extraction")
+        or specialist_results.get("information_extraction")
+        or {}
+    )
+    addr_check = ident.get("address_check") if isinstance(ident, dict) else None
+    ext = info.get("extracted_info") if isinstance(info, dict) else None
+    caller_type = output.get("caller_type") or (info.get("caller_type") if isinstance(info, dict) else None)
+
+    out = dict(output)
+    fired_rules: list[str] = []
+
+    # Rule R1
+    rented_flag = (addr_check or {}).get("flag_rented_under_1_year") if addr_check else False
+    if (
+        rented_flag is True
+        and caller_type == "Applicant"
+        and out.get("disposition") == "Incomplete Information"
+    ):
+        out["disposition"] = "Rented Residing Less Than 1 Year"
+        out["disposition_rcu_status"] = "Critical"
+        out["verdict"] = "Critical"
+        fired_rules.append("R1:rented_under_1y_beats_incomplete")
+        # Tighten reasoning chain so the override is auditable
+        chain = list(out.get("reasoning_chain") or [])
+        chain.append(
+            "Post-hoc rule R1: address_check.flag_rented_under_1_year=true on "
+            "Applicant call — Critical disposition 'Rented Residing Less Than "
+            "1 Year' overrides 'Incomplete Information' per RCU_Context spec."
+        )
+        out["reasoning_chain"] = chain
+
+    # Rule R2
+    vehicle_type = (ext or {}).get("vehicle_type") if ext else None
+    if (
+        out.get("disposition") == "Driver is not co-applicant"
+        and vehicle_type in ("3W", "Three-wheeler", "three-wheeler", "Commercial", "commercial", "Car", "car")
+    ):
+        # Only downgrade if no Critical signal elsewhere — preserve the LLM's
+        # Negative tier instead of fast-jumping to Positive without checks
+        fr = specialist_results.get("fraud_risk") or {}
+        sev = (fr.get("highest_severity_observed") if isinstance(fr, dict) else None) or "none"
+        if sev not in ("critical", "high"):
+            out["disposition"] = "No Negative Information"
+            out["disposition_rcu_status"] = "Positive"
+            out["verdict"] = "Positive"
+            fired_rules.append("R2:3W_excludes_driver_not_coapp")
+            chain = list(out.get("reasoning_chain") or [])
+            chain.append(
+                f"Post-hoc rule R2: vehicle_type={vehicle_type} is commercial-"
+                "passenger by default (e.g. auto-rickshaw). Driver arrangement "
+                "is legitimate fleet operation, not a fraud signal — disposition "
+                "downgraded to 'No Negative Information' per RCU_Context spec."
+            )
+            out["reasoning_chain"] = chain
+
+    if fired_rules:
+        out["_post_hoc_rules_fired"] = fired_rules
     return out
 
 
@@ -731,7 +848,12 @@ def run_multi_agent_verification(llm_client, deployment, utterances, max_workers
     )
     t_refl_elapsed = time.time() - t_refl
 
-    final_output = _enforce_disposition_consistency(_apply_reflection(synth_out, reflection_out))
+    final_output = _enforce_disposition_consistency(
+        _enforce_disposition_rules(
+            _apply_reflection(synth_out, reflection_out),
+            spec_results,
+        )
+    )
     reflection_applied = (
         isinstance(reflection_out, dict)
         and not reflection_out.get("_parse_error")

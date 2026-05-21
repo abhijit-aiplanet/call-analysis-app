@@ -198,7 +198,7 @@ const PerFileDetail = ({ result, audioUrl, activeTab, setActiveTab }: PerFileDet
 
   const tabs: TabDef[] = [
     { id: "verdict",      label: "Verdict",      icon: Sparkles,       show: true },
-    { id: "identity",     label: "Identity",     icon: UserCheck,      show: !triaged && !!specs.identity_verification && !!specs.information_extraction },
+    { id: "identity",     label: "Identity",     icon: UserCheck,      show: !triaged && (!!specs.identity_and_extraction || (!!specs.identity_verification && !!specs.information_extraction)) },
     { id: "risk",         label: "Risk",         icon: ShieldCheck,    show: !triaged && !!specs.fraud_risk },
     { id: "conversation", label: "Conversation", icon: MessageCircle,  show: !triaged && !!specs.conversation_behavior },
     { id: "transcript",   label: "Transcript",   icon: MessageSquare,  show: true },
@@ -279,10 +279,14 @@ const PerFileDetail = ({ result, audioUrl, activeTab, setActiveTab }: PerFileDet
       {activeTab === "verdict" && (
         <VerdictView verdict={verdict} triage={triage} reflection={reflection} />
       )}
-      {activeTab === "identity" && !triaged && specs.identity_verification && specs.information_extraction && (
+      {activeTab === "identity" && !triaged && (specs.identity_and_extraction || (specs.identity_verification && specs.information_extraction)) && (
         <IdentityCheckView
-          identityVerificationOutput={specs.identity_verification.output}
-          informationExtractionOutput={specs.information_extraction.output}
+          identityVerificationOutput={
+            (specs.identity_and_extraction?.output ?? specs.identity_verification?.output) || {}
+          }
+          informationExtractionOutput={
+            (specs.identity_and_extraction?.output ?? specs.information_extraction?.output) || {}
+          }
         />
       )}
       {activeTab === "risk" && !triaged && specs.fraud_risk && (

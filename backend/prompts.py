@@ -61,43 +61,128 @@ Refinance=new loan to close old.
 """
 
 
-# ─── DISPOSITIONS CATALOG — Decision + Reflection only ─────────────────────
+# ─── DISPOSITIONS CATALOG — verbatim from BACL TC Dispositions xlsx + Scope of Speech Analytics doc ─
 DISPOSITIONS_CATALOG = """\
-═══ 31 CANONICAL DISPOSITIONS ════════════════════════════════════════════
+═══ CANONICAL DISPOSITIONS — apply to the right CALLER TYPE ════════════════
+The disposition vocabulary is fixed by BACL. Each disposition belongs to one \
+caller-type sheet (Applicant / Monnai / Co-applicant). Pick the disposition \
+whose definition fits the call.
 
-CRITICAL:
-- Third Party use · Third Party Mobile No · Third Party Attending Calls
-- Third Party Prompting On Call
-- **Loan Not Taken** — EXPLICIT denial only ("मैंने finance नहीं करवाया", \
-  guarantor-only, financed elsewhere). NOT for "bike not delivered yet" (normal pre-disbursement).
-- Loan Cancelled · Call Back Suspicious · Wrong Number
-- Vehicle Delivered Before Login — vehicle received 30+ days BEFORE TC
-- Refused to share information
-- Information Mismatch-Customer demographics
-- **Rented Residing Less Than 1 Year** — (Applicant only) rented + duration <1y, \
-  includes "recently moved" + rental
-- Monnai name mismatch · Monnai name belongs to third Party · Mobile number belongs to Monnai
-- Tenure Less Than 3 Months
-- Person is not co-applicant (Co-app only)
+═══ BLOOD-RELATIVE RULE (used by many dispositions) ═══════════════════════
+**Close blood relatives (Negative tier)**: spouse, parent, child, sibling. ONLY these.
+**Other than blood relatives (Critical tier)**: friend, nephew, cousin, \
+**brother-in-law, sister-in-law, mother-in-law, father-in-law**, neighbour, \
+dealer staff, ANYONE not in the close-blood list. In-laws are EXPLICITLY \
+Critical (per BACL spec — they are not blood relatives).
 
-NEGATIVE:
-- Third Party Attending Calls (Family-Close blood relative)
-- Third Party use(Family-Close Blood relative)
-- Third Party Mobile No(Family-Close Blood relative)
-- Product Mismatch · Refuse to share information- Irate customer · Dowry
-- **Incomplete Information** — call ended <25 utts with ≥1 core topic \
-  (name/address/mobile/vehicle/loan) NOT covered
-- Refused to share information - Dealer/Sourcing influenced · Only Enquiry
-- Connected But Not Response — connected, silent >10s
-- No Negative Information Suspicious — info matches BUT voice/age mismatch, \
-  DOB fumbling, dealer prompting (verification DID complete but feels off)
-- **Driver is not co-applicant** — "driver ले लेंगे" / "rent पे देंगे" + driver \
-  not co-app/guarantor (exception: fleet/business owner)
-- Call Back — callback AFTER name+address verified
+═══ APPLICANT SHEET — Contacted scenarios ════════════════════════════════
 
-POSITIVE:
-- No Negative Information — clean: identity/address/mobile/vehicle/loan all \
-  covered, consistent, no suspicious cues.
+CRITICAL (Applicant):
+- "Third Party use" — Non-blood third party is USING the bike.
+- "Third Party Mobile No" — Non-blood third party OWNS the mobile number.
+- "Loan Not Taken" — Financed from another company / personal loan / refinance \
+  with info mismatch / "I'm just a guarantor" / EXPLICIT denial. **NOT** for \
+  "bike not delivered yet" (normal pre-disbursement state).
+- "Loan Cancelled" — Customer says they cancelled the loan; took bike via cash; \
+  high ROI; high DP; low CIBIL; personal issue; returned the bike and won't \
+  verify further; OR can't afford and is informing dealer of cancellation.
+- "Call Back Suspicious" — Customer asks to call back BEFORE name+address verified.
+- "Third Party Attending Calls" — Non-blood third party (friend/nephew/cousin/\
+  any in-law) is the one on the call providing loan details.
+- "Wrong Number" — Customer doesn't know the applicant; probe who they are, \
+  whether they know the customer, tenure on the number.
+- "Vehicle Delivered Before Login" — Bike received 30+ DAYS BEFORE this TC call. \
+  (Refinance with same info doesn't fire this.)
+- "Third Party Prompting On Call" — Customer provides info BUT a second voice \
+  is audibly prompting them from behind.
+- "Refused to share information" — Argues and refuses; OR disconnects mid-info-sharing.
+- "Information Mismatch-Customer demographics" — Demographics (name/DOB/address/\
+  employment) contradict the application.
+- "Rented Residing Less Than 1 Year" — Customer at a RENTED address for <1 year. \
+  Includes "recently moved" + rental.
+
+NEGATIVE (Applicant):
+- "Third Party Attending Calls(Family-Close blood relative)" — Close-blood family \
+  member is on the call providing loan details + may own the mobile.
+- "Product Mismatch" — Application says 2W but customer says 3W (or reverse).
+- "Refuse to share information- Irate customer" — Refusal driven by anger / \
+  dissatisfaction with services.
+- "Dowry" — Vehicle for marriage / dowry purpose.
+- "Incomplete Information" — Customer provided incomplete information (core \
+  topics name/address/mobile/vehicle/loan not all covered).
+- "Third Party use(Family-Close Blood relative)" — Close-blood family member \
+  uses the bike.
+- "Third Party Mobile No(Family-Close Blood relative)" — Close-blood family \
+  member owns the mobile.
+- "Refused to share information - Dealer/Sourcing influenced" — Dealer/sourcing \
+  team told the customer not to share info.
+- "Only Enquiry" — Customer just enquired about the loan, didn't actually take it.
+- "Connected But Not Response" — Connected but silent >10 seconds.
+- "No Negative Information Suspicious" — Info matches AND verification completed, \
+  BUT voice doesn't match expected age/gender, DOB fumbling, thinking while \
+  answering. RESERVED for fumbling/voice-mismatch — NOT a catch-all.
+- "Driver is not co-applicant" — Vehicle used by driver, driver is NOT a \
+  co-applicant/guarantor. **EXCEPTION**: owner is a fleet owner OR vehicle is \
+  for business purpose (3W auto-rickshaw is commercial by default → exception applies).
+- "Call Back" — Customer asks to call back AFTER name+address ALREADY verified.
+
+POSITIVE (Applicant):
+- "No Negative Information" — Complete verification, refinance with same info OK, \
+  customer eligible per Bajaj criteria. **NUANCE**: if Third Party (e.g. renting \
+  the vehicle) IS using the vehicle BUT is the Co-Applicant or Guarantor on the \
+  loan → still POSITIVE.
+
+═══ MONNAI SHEET — Mobile from third-party data lookup ═══════════════════
+Monnai callers have THREE Critical sub-tiers:
+- **Critical M** — Monnai-specific issues only.
+- **Critical O** — Other (general critical applicable to Monnai callers).
+- **Critical MO** — BOTH Monnai-specific AND general critical issues present.
+
+Critical M (Monnai-specific):
+- "Monnai name mismatch" — Customer doesn't know the Monnai-recorded name.
+- "Monnai name belongs to third Party" — Mobile belongs to customer BUT Monnai \
+  name is of a non-blood third party.
+- "Mobile number belongs to Monnai" — Mobile is in another (Monnai) name, \
+  customer is not the owner. Other than blood relative or self.
+- "Tenure Less Than 3Months" — Mobile-number usage <3 months by customer OR \
+  Monnai tenure <3 months.
+
+Critical O (general Critical applies to Monnai callers too):
+- All Applicant-sheet Critical dispositions are valid for Monnai callers, plus \
+  "Rented Residing Less Than 1 Year" appears here as well.
+
+═══ CO-APPLICANT SHEET — connected scenarios ═════════════════════════════
+
+CRITICAL (Co-app):
+- "Person is not co-applicant" — Subject confirms they are NOT a co-applicant on the loan.
+- "Third party mobile number" — Mobile is third-party (non-blood) for the co-app side.
+- "Wrong Number" — Same as Applicant — doesn't know the applicant.
+- "Mob No Not Use By Coa Not Family" — Mobile NOT used by the co-applicant \
+  AND the actual user is not close-blood family.
+
+NEGATIVE (Co-app):
+- "Third Party Attending Calls (Family-Close blood relative)" — Close-blood family \
+  member is on the call instead of the co-applicant.
+- "Refused to share information" — Co-app refuses to share verification info.
+- "Connected But Not Response" — Same as Applicant.
+- "Incomplete Information" — Same as Applicant.
+- "Third Party Mobile No Family Close Blood Relative" — Mobile owned by \
+  close-blood family member.
+- "Mob No Not Use By Coa Family" — Mobile not used by the co-applicant; close-blood \
+  family member uses it.
+
+POSITIVE (Co-app):
+- "No Negative Information (Includes-Only enq)" — Clean co-app verification; \
+  enquiry-only counts as Positive on the co-app sheet.
+- "App Mob No Use By Coa Family" — Applicant's mobile is used by co-applicant's \
+  family member (allowed for co-app side).
+
+═══ HARD CONSISTENCY ════════════════════════════════════════════════════
+disposition_rcu_status MUST be:
+- "Critical" for ANY Critical-tier disposition (including Critical M / O / MO).
+- "Negative" for any Negative-tier disposition.
+- "Positive" for any Positive-tier disposition.
+Never cross-tag. The pipeline server-side enforces this — drift will be auto-corrected.
 """
 
 
@@ -138,10 +223,15 @@ Be conservative — only short-circuit when VERY sure. Doubt → let pipeline ru
 """
 
 
-# ─── SPECIALIST 1: Information Extraction ──────────────────────────────────
-SYS_INFORMATION_EXTRACTION = DOMAIN_CORE + """
+# ─── SPECIALIST 1: Information Extraction + Identity Verification (merged) ─
+# Single specialist handles caller-type detection, structured field
+# extraction, AND consistency checks. Two-LLM-calls-worth of work in one
+# round-trip. Slight output bloat is offset by saving one API call's overhead
+# and one full transcript+DOMAIN_CORE input pass.
+SYS_IDENTITY_AND_EXTRACTION = DOMAIN_CORE + """
 
-ROLE: **Information Extraction Specialist**. Also handles **caller-type auto-detection**.
+ROLE: **Identity & Extraction Specialist** — handles caller-type auto-detection, \
+structured field extraction, AND identity verification in one pass.
 
 ═══ TASK 1: CALLER TYPE — RULES IN ORDER ═════════════════════════════════
 Step 1: Find subject_name — what subject states when asked "आपका नाम क्या है?".
@@ -186,32 +276,30 @@ core_topics_covered (object: {name, address, mobile, vehicle, loan} — true if 
 
 Meta: call_was_connected, customer_engagement_level (Cooperative/Reluctant/Hostile/Silent/Argumentative), estimated_utterances_in_call.
 
-═══ OUTPUT JSON ═════════════════════════════════════════════════════════
-Top-level keys: caller_type, caller_type_confidence_1_10, caller_type_evidence, \
-subject_name, applicant_name_on_loan, extracted_info (object with all 27 fields above).
-"""
+═══ TASK 3: IDENTITY VERIFICATION CHECKS ═════════════════════════════════
+For each check, set status + key flags. Use null/"not_asked" if topic wasn't raised.
 
-
-# ─── SPECIALIST 2: Identity Verification ───────────────────────────────────
-SYS_IDENTITY_VERIFICATION = DOMAIN_CORE + """
-
-ROLE: **Identity Verification Specialist**. Evaluate whether stated identity/address/mobile/vehicle/loan survive verification — no external records.
-
-═══ CHECKS ═════════════════════════════════════════════════════════════
-1. **name_check** — status (verified/partial/refused/third_party/monnai_mismatch/not_asked) + notes.
-2. **address_check** — status (verified/partial/refused/rented_short_residence/not_asked), residing_duration_months, **flag_rented_under_1_year** (true if rented AND <12 months, OR recently moved regardless of exact duration).
-3. **mobile_ownership_check** — status (own/close_family/non_relative/monnai_mismatch/not_asked), relationship (free text), flag_tenure_under_3_months.
-4. **vehicle_check** — delivery_status (not_yet_delivered/within_30_days/30_plus_days_ago/not_asked), usage_status (self/close_family/non_relative/driver_not_co_app/not_asked). **IMPORTANT**: "driver ले लेंगे/rent पे देंगे" + driver-not-co-app → usage_status="driver_not_co_app". flag_vehicle_delivered_before_login, flag_product_mismatch (2W↔3W).
-5. **loan_check** — status (consistent_with_application/loan_not_taken/loan_cancelled/refinance_mismatch/only_enquiry/dowry_purpose/not_asked) + notes. **IMPORTANT**: loan_not_taken requires EXPLICIT DENIAL — NOT just "bike not delivered yet".
-6. **callback_check** — requested_callback, name_and_address_verified_first, flag_call_back_suspicious.
+1. **name_check** — status ∈ {verified, partial, refused, third_party, monnai_mismatch, not_asked}; notes.
+2. **address_check** — status ∈ {verified, partial, refused, rented_short_residence, not_asked}; residing_duration_months; **flag_rented_under_1_year** (true if Rented AND <12 months OR recently_moved=true regardless of exact duration).
+3. **mobile_ownership_check** — status ∈ {own, close_family, non_relative, monnai_mismatch, not_asked}; relationship (free text); flag_tenure_under_3_months.
+4. **vehicle_check** — delivery_status ∈ {not_yet_delivered, within_30_days, 30_plus_days_ago, not_asked}; usage_status ∈ {self, close_family, non_relative, driver_not_co_app, not_asked}. "driver ले लेंगे/rent पे देंगे" + driver-not-co-app → usage_status="driver_not_co_app". flag_vehicle_delivered_before_login, flag_product_mismatch (2W↔3W contradiction).
+5. **loan_check** — status ∈ {consistent_with_application, loan_not_taken, loan_cancelled, refinance_mismatch, only_enquiry, dowry_purpose, not_asked}; notes. loan_not_taken requires EXPLICIT denial — NOT "bike not delivered yet".
+6. **callback_check** — requested_callback (bool), name_and_address_verified_first (bool), flag_call_back_suspicious.
 
 ═══ OVERALL ════════════════════════════════════════════════════════════
-- identity_consistency_1_10
+- identity_consistency_1_10 (integer)
 - biggest_concern (one line)
 - **verification_completeness_pct** (0-100): % of 5 core topics (name/address/mobile/vehicle/loan) actually verified. If <80% AND call ended, flag in biggest_concern.
 
-═══ OUTPUT JSON ════════════════════════════════════════════════════════
-Keys: name_check, address_check, mobile_ownership_check, vehicle_check, loan_check, callback_check, identity_consistency_1_10, verification_completeness_pct, biggest_concern.
+═══ OUTPUT JSON ═════════════════════════════════════════════════════════
+Top-level keys:
+- caller_type, caller_type_confidence_1_10, caller_type_evidence
+- subject_name, applicant_name_on_loan
+- extracted_info (object with all the structured fields from Task 2)
+- name_check, address_check, mobile_ownership_check, vehicle_check, loan_check, callback_check
+- identity_consistency_1_10
+- verification_completeness_pct
+- biggest_concern
 """
 
 
@@ -470,12 +558,19 @@ If Decision Agent did well: agreement_with_decision="full", issues_found=[]. The
 
 
 # ─── Registry (consumed by pipeline.py) ────────────────────────────────────
+# v3 (post-RCU_Context alignment + agent merging): Information Extraction
+# and Identity Verification merged into a single specialist that does both
+# tasks in one LLM call. Saves ~one call per pipeline run.
 SPECIALIST_REGISTRY = {
-    "information_extraction": {"system": SYS_INFORMATION_EXTRACTION, "max_tokens": 3000},
-    "identity_verification":  {"system": SYS_IDENTITY_VERIFICATION,  "max_tokens": 2000},
-    "fraud_risk":             {"system": SYS_FRAUD_RISK,             "max_tokens": 3000},
-    "conversation_behavior":  {"system": SYS_CONVERSATION_BEHAVIOR,  "max_tokens": 4500},
+    "identity_and_extraction": {"system": SYS_IDENTITY_AND_EXTRACTION, "max_tokens": 3500},
+    "fraud_risk":              {"system": SYS_FRAUD_RISK,              "max_tokens": 3000},
+    "conversation_behavior":   {"system": SYS_CONVERSATION_BEHAVIOR,   "max_tokens": 4500},
 }
+
+# Back-compat aliases — kept so anything still importing the legacy names
+# continues to work without code churn elsewhere.
+SYS_INFORMATION_EXTRACTION = SYS_IDENTITY_AND_EXTRACTION
+SYS_IDENTITY_VERIFICATION  = SYS_IDENTITY_AND_EXTRACTION
 
 # Decision Agent runs separately (not in the parallel specialists set).
 SYS_SYNTHESIZER = SYS_DISPOSITION_CLASSIFIER

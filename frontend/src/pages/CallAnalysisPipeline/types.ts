@@ -79,10 +79,13 @@ export interface ReflectionBlock {
 export interface VerificationAggregate {
   triage?: TriageBlock;
   specialists: {
-    information_extraction?: SpecialistEntry;
-    identity_verification?:  SpecialistEntry;
-    fraud_risk?:             SpecialistEntry;
-    conversation_behavior?:  SpecialistEntry;
+    // v3 (post-merge): single specialist handles both extraction + identity verification
+    identity_and_extraction?: SpecialistEntry;
+    // legacy v2 keys kept optional for back-compat with older job records
+    information_extraction?:  SpecialistEntry;
+    identity_verification?:   SpecialistEntry;
+    fraud_risk?:              SpecialistEntry;
+    conversation_behavior?:   SpecialistEntry;
   };
   decision_agent: SpecialistEntry;
   reflection?: ReflectionBlock;

@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { IndianRupee, Clock, Mic, Brain, Layers } from "lucide-react";
 import type { UnifiedCost, VerificationAggregate, STTCost } from "./types";
 import { inr, inrScale, USD_TO_INR } from "@/lib/currency";
+import { CachingEstimator } from "./CachingEstimator";
 
 interface CostBreakdownProps {
   unified: UnifiedCost;
@@ -14,10 +15,12 @@ interface CostBreakdownProps {
 }
 
 const SPECIALIST_LABELS: Record<string, string> = {
-  information_extraction: "Information Extraction (also caller-type detect)",
-  identity_verification:  "Identity Verification",
-  fraud_risk:             "Fraud Risk Detection",
-  conversation_behavior:  "Conversation Behavior",
+  identity_and_extraction: "Identity & Extraction (caller-type + fields + checks)",
+  // legacy v2 keys
+  information_extraction:  "Information Extraction (also caller-type detect)",
+  identity_verification:   "Identity Verification",
+  fraud_risk:              "Fraud Risk Detection",
+  conversation_behavior:   "Conversation Behavior",
 };
 
 export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes, sttVendor }: CostBreakdownProps) => {
@@ -248,6 +251,9 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes, st
           </div>
         </CardContent>
       </Card>
+
+      {/* What-if: prompt-caching estimator */}
+      <CachingEstimator unified={unified} verification={verification} />
 
       {/* Extrapolations */}
       {unified.cost_per_minute_audio_usd != null && (
