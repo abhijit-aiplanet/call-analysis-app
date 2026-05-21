@@ -158,7 +158,11 @@ interface PerFileDetailProps {
 
 const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) => {
   const verdict = result.rcu_verdict;
-  const specs = result.stage_2_verification.specialists;
+  const verification = result.stage_2_verification;
+  const specs = verification.specialists;
+  const triage = verification.triage;
+  const reflection = verification.reflection;
+  const triaged = !!(verdict.triage_short_circuit || triage?.short_circuited);
   const verdictTone = VERDICT_TONE[verdict.verdict || "Unknown"] || VERDICT_TONE.Unknown;
   const routingTone = ROUTING_TONE[verdict.decision_routing || ""] ||
     { bg: "bg-slate-100", text: "text-slate-600", label: verdict.decision_routing || "—" };
@@ -208,15 +212,19 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
           <TabsTrigger value="verdict" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <Sparkles className="size-3.5 mr-1.5" /> Verdict
           </TabsTrigger>
-          <TabsTrigger value="identity" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <UserCheck className="size-3.5 mr-1.5" /> Identity
-          </TabsTrigger>
-          <TabsTrigger value="risk" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <ShieldCheck className="size-3.5 mr-1.5" /> Risk
-          </TabsTrigger>
-          <TabsTrigger value="conversation" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <MessageCircle className="size-3.5 mr-1.5" /> Conversation
-          </TabsTrigger>
+          {!triaged && (
+            <>
+              <TabsTrigger value="identity" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <UserCheck className="size-3.5 mr-1.5" /> Identity
+              </TabsTrigger>
+              <TabsTrigger value="risk" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <ShieldCheck className="size-3.5 mr-1.5" /> Risk
+              </TabsTrigger>
+              <TabsTrigger value="conversation" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                <MessageCircle className="size-3.5 mr-1.5" /> Conversation
+              </TabsTrigger>
+            </>
+          )}
           <TabsTrigger value="transcript" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <MessageSquare className="size-3.5 mr-1.5" /> Transcript
           </TabsTrigger>
@@ -225,15 +233,23 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="verdict"      className="mt-4"><VerdictView         verdict={verdict} /></TabsContent>
-        <TabsContent value="identity"     className="mt-4">
-          <IdentityCheckView
-            identityVerificationOutput={specs.identity_verification.output}
-            informationExtractionOutput={specs.information_extraction.output}
-          />
+        <TabsContent value="verdict" className="mt-4">
+          <VerdictView verdict={verdict} triage={triage} reflection={reflection} />
         </TabsContent>
-        <TabsContent value="risk"         className="mt-4"><RiskView            output={specs.fraud_risk.output} /></TabsContent>
-        <TabsContent value="conversation" className="mt-4"><ConversationView    output={specs.conversation_behavior.output} /></TabsContent>
+        {!triaged && specs.identity_verification && specs.information_extraction && (
+          <TabsContent value="identity" className="mt-4">
+            <IdentityCheckView
+              identityVerificationOutput={specs.identity_verification.output}
+              informationExtractionOutput={specs.information_extraction.output}
+            />
+          </TabsContent>
+        )}
+        {!triaged && specs.fraud_risk && (
+          <TabsContent value="risk" className="mt-4"><RiskView output={specs.fraud_risk.output} /></TabsContent>
+        )}
+        {!triaged && specs.conversation_behavior && (
+          <TabsContent value="conversation" className="mt-4"><ConversationView output={specs.conversation_behavior.output} /></TabsContent>
+        )}
 
         <TabsContent value="transcript" className="mt-4">
           <TranscriptView result={result} />
@@ -255,7 +271,7 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
 // ─── Transcript view ───────────────────────────────────────────────────────
 const TranscriptView = ({ result }: { result: AnalysisRecord }) => {
   const utterances = result.stage_1_stt.utterances;
-  const behaviorOut = result.stage_2_verification.specialists.conversation_behavior.output as Record<string, unknown>;
+  const behaviorOut = result.stage_2_verification.specialists?.conversation_behavior?.output as Record<string, unknown> | undefined;
   const perUtt = (behaviorOut?.per_utterance as Array<{ idx?: number; speaker_role?: string; behavior_tag?: string }>) || [];
 
   const borderColorFor = (idx: number): string => {

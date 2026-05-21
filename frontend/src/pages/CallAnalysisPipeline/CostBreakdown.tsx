@@ -136,7 +136,27 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
-            {Object.entries(verification.specialists).map(([key, payload]) => (
+            {verification.triage && (
+              <div className="grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg bg-blue-50/40 border border-blue-100">
+                <div className="col-span-4 text-sm font-medium text-slate-700">
+                  Triage Agent (pre-flight)
+                  {verification.triage.short_circuited && (
+                    <Badge variant="outline" className="ml-2 text-[9px] bg-white">short-circuit</Badge>
+                  )}
+                </div>
+                <div className="col-span-3 text-xs text-slate-500">
+                  in: {verification.triage.cost.prompt_tokens.toLocaleString()} / out: {verification.triage.cost.completion_tokens.toLocaleString()}
+                </div>
+                <div className="col-span-3 text-xs text-slate-500">
+                  <Clock className="inline size-3 mr-1" />
+                  {(verification.triage.cost.wall_time_s ?? 0).toFixed(1)}s
+                </div>
+                <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
+                  {fmtUSD(verification.triage.cost.cost_usd_total)}
+                </div>
+              </div>
+            )}
+            {Object.entries(verification.specialists).map(([key, payload]) => payload && (
               <div key={key} className="grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg hover:bg-slate-50">
                 <div className="col-span-4 text-sm font-medium text-slate-700">
                   {SPECIALIST_LABELS[key] || key}
@@ -166,6 +186,26 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                 {fmtUSD(verification.decision_agent.cost.cost_usd_total)}
               </div>
             </div>
+            {verification.reflection && (verification.reflection.cost.cost_usd_total > 0 || verification.reflection.applied) && (
+              <div className="grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg bg-purple-50/40 border border-purple-100">
+                <div className="col-span-4 text-sm font-medium text-slate-700">
+                  Reflection Agent (self-critique)
+                  {verification.reflection.applied && (
+                    <Badge variant="outline" className="ml-2 text-[9px] bg-white">applied</Badge>
+                  )}
+                </div>
+                <div className="col-span-3 text-xs text-slate-500">
+                  in: {verification.reflection.cost.prompt_tokens.toLocaleString()} / out: {verification.reflection.cost.completion_tokens.toLocaleString()}
+                </div>
+                <div className="col-span-3 text-xs text-slate-500">
+                  <Clock className="inline size-3 mr-1" />
+                  {(verification.reflection.cost.wall_time_s ?? 0).toFixed(1)}s
+                </div>
+                <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
+                  {fmtUSD(verification.reflection.cost.cost_usd_total)}
+                </div>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

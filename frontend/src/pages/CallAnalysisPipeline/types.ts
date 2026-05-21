@@ -38,27 +38,71 @@ export interface SpecialistEntry {
   cost: LLMCost;
 }
 
+// ─── Triage + Reflection agent blocks ──────────────────────────────────────
+export interface TriageOutput {
+  needs_full_pipeline: boolean;
+  quick_disposition: string | null;
+  quick_verdict: RCUVerdict | null;
+  quick_routing: DecisionRouting | null;
+  quick_confidence_1_10: number | null;
+  rationale: string;
+}
+
+export interface TriageBlock {
+  output: TriageOutput;
+  cost: LLMCost;
+  short_circuited: boolean;
+}
+
+export interface ReflectionIssue {
+  severity: "low" | "medium" | "high" | string;
+  check: string;
+  description: string;
+}
+
+export interface ReflectionOutput {
+  issues_found: ReflectionIssue[];
+  agreement_with_decision: "full" | "partial" | "disagree" | string;
+  confidence_delta: number;
+  disposition_override_suggestion: string | null;
+  routing_override: DecisionRouting | null;
+  reviewer_notes: string;
+}
+
+export interface ReflectionBlock {
+  output: ReflectionOutput | null;
+  cost: LLMCost;
+  applied: boolean;
+}
+
 // ─── Multi-agent verification stage ────────────────────────────────────────
 export interface VerificationAggregate {
+  triage?: TriageBlock;
   specialists: {
-    information_extraction: SpecialistEntry;
-    identity_verification:  SpecialistEntry;
-    fraud_risk:             SpecialistEntry;
-    conversation_behavior:  SpecialistEntry;
+    information_extraction?: SpecialistEntry;
+    identity_verification?:  SpecialistEntry;
+    fraud_risk?:             SpecialistEntry;
+    conversation_behavior?:  SpecialistEntry;
   };
   decision_agent: SpecialistEntry;
+  reflection?: ReflectionBlock;
+  final_output?: Record<string, unknown>;
   aggregate_cost: {
     total_prompt_tokens: number;
     total_completion_tokens: number;
     total_tokens: number;
     total_cost_usd: number;
+    triage_usd?: number;
     specialists_total_usd: number;
     decision_agent_usd: number;
+    reflection_usd?: number;
     n_specialists: number;
   };
   timing: {
+    triage_wall_s?: number;
     specialists_parallel_wall_s: number;
     decision_agent_wall_s: number;
+    reflection_wall_s?: number;
     total_verification_wall_s: number;
   };
   ran_at_utc: string;
@@ -69,8 +113,10 @@ export interface VerificationAggregate {
 export interface UnifiedCost {
   stt_usd: number;
   verification_usd: number;
+  triage_usd?: number;
   specialists_usd: number;
   decision_agent_usd: number;
+  reflection_usd?: number;
   total_usd: number;
   cost_per_minute_audio_usd: number | null;
   total_wall_time_s: number;
@@ -115,6 +161,14 @@ export interface RCUVerdictBlock {
   rationale: string | null;
   risk_tags: string[];
   key_evidence_quotes: EvidenceQuote[];
+  reasoning_chain?: string[];
+  disposition_override_suggestion?: string | null;
+  triage_short_circuit?: boolean;
+  reflection_applied?: boolean;
+  pre_reflection?: {
+    verdict_confidence_1_10: number | null;
+    decision_routing: DecisionRouting | null;
+  } | null;
 }
 
 // ─── Full per-call record ──────────────────────────────────────────────────
