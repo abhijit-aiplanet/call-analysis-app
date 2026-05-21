@@ -1,6 +1,6 @@
-// Shared TypeScript types for the Call Analysis Pipeline (Scribe v2 + multi-agent).
+// Shared TypeScript types for the RCU AI Verification pipeline.
 
-// ─── Per-call result types ──────────────────────────────────────────────────
+// ─── STT layer ──────────────────────────────────────────────────────────────
 export interface STTUtterance {
   speaker: string | null;
   text: string;
@@ -22,6 +22,7 @@ export interface STTCost {
   wall_time_s: number;
 }
 
+// ─── LLM agent cost ─────────────────────────────────────────────────────────
 export interface LLMCost {
   prompt_tokens: number;
   completion_tokens: number;
@@ -37,45 +38,47 @@ export interface SpecialistEntry {
   cost: LLMCost;
 }
 
-export interface SentimentAggregate {
+// ─── Multi-agent verification stage ────────────────────────────────────────
+export interface VerificationAggregate {
   specialists: {
-    intelligence: SpecialistEntry;
-    emotion: SpecialistEntry;
-    performance: SpecialistEntry;
-    resolution: SpecialistEntry;
-    risk: SpecialistEntry;
+    information_extraction: SpecialistEntry;
+    identity_verification:  SpecialistEntry;
+    fraud_risk:             SpecialistEntry;
+    conversation_behavior:  SpecialistEntry;
   };
-  synthesizer: SpecialistEntry;
+  decision_agent: SpecialistEntry;
   aggregate_cost: {
     total_prompt_tokens: number;
     total_completion_tokens: number;
     total_tokens: number;
     total_cost_usd: number;
     specialists_total_usd: number;
-    synthesizer_usd: number;
+    decision_agent_usd: number;
     n_specialists: number;
   };
   timing: {
     specialists_parallel_wall_s: number;
-    synthesizer_wall_s: number;
-    total_sentiment_wall_s: number;
+    decision_agent_wall_s: number;
+    total_verification_wall_s: number;
   };
   ran_at_utc: string;
   model: string;
 }
 
+// ─── Unified cost summary ──────────────────────────────────────────────────
 export interface UnifiedCost {
   stt_usd: number;
-  sentiment_usd: number;
+  verification_usd: number;
   specialists_usd: number;
-  synthesizer_usd: number;
+  decision_agent_usd: number;
   total_usd: number;
   cost_per_minute_audio_usd: number | null;
   total_wall_time_s: number;
-  stage_cost_share_pct: { stt: number; sentiment: number };
+  stage_cost_share_pct: { stt: number; verification: number };
   rate_card: Record<string, number>;
 }
 
+// ─── Audio metadata ────────────────────────────────────────────────────────
 export interface AudioMeta {
   audio_duration_s: number;
   audio_minutes: number;
@@ -87,10 +90,39 @@ export interface AudioMeta {
   keyterms_applied: string[];
 }
 
+// ─── Top-level RCU verdict (the headline) ──────────────────────────────────
+export type RCUVerdict = "Critical" | "Negative" | "Positive" | string;
+export type RCUStatus  = "Critical" | "Negative" | "Positive" | string;
+export type CallerType = "Applicant" | "Co-applicant" | "Monnai" | "Unknown" | string;
+export type DecisionRouting = "auto_clear" | "human_qc" | "compliance_escalation" | string;
+
+export interface EvidenceQuote {
+  tag: string;
+  quote: string;
+  timestamp_s: number | null;
+}
+
+export interface RCUVerdictBlock {
+  verdict: RCUVerdict | null;
+  verdict_confidence_1_10: number | null;
+  disposition: string | null;
+  disposition_rcu_status: RCUStatus | null;
+  caller_type: CallerType | null;
+  decision_routing: DecisionRouting | null;
+  routing_rationale: string | null;
+  headline_chip: string | null;
+  executive_summary: string | null;
+  rationale: string | null;
+  risk_tags: string[];
+  key_evidence_quotes: EvidenceQuote[];
+}
+
+// ─── Full per-call record ──────────────────────────────────────────────────
 export interface AnalysisRecord {
   filename: string;
   processed_at_utc: string;
   audio_meta: AudioMeta;
+  rcu_verdict: RCUVerdictBlock;
   stage_1_stt: {
     vendor: string;
     model_id: string;
@@ -98,22 +130,22 @@ export interface AnalysisRecord {
     utterances: STTUtterance[];
     cost: STTCost;
   };
-  stage_2_sentiment_multi_agent: SentimentAggregate;
+  stage_2_verification: VerificationAggregate;
   unified_cost: UnifiedCost;
 }
 
-// ─── Single-file response (legacy /analyze endpoint) ────────────────────────
+// ─── Single-file endpoint response ─────────────────────────────────────────
 export interface AnalyzeResponse {
   success: boolean;
   result?: AnalysisRecord;
   error?: string;
 }
 
-// ─── Batch job types (new /batch endpoints) ─────────────────────────────────
+// ─── Batch types ───────────────────────────────────────────────────────────
 export type FileStatus =
   | "queued"
   | "running_stt"
-  | "running_sentiment"
+  | "running_sentiment"   // kept name for back-compat with batch_manager
   | "ok"
   | "error";
 
@@ -144,10 +176,11 @@ export interface BatchAggregateCost {
   total_audio_minutes: number;
   total_audio_hours: number;
   total_stt_usd: number;
-  total_sentiment_usd: number;
+  total_verification_usd: number;
   total_pipeline_usd: number;
   avg_cost_per_call_usd: number;
   avg_cost_per_minute_audio_usd: number | null;
+  verdict_distribution: Record<string, number>;
   wall_time_seconds: number;
   audio_minutes_per_wall_minute?: number;
 }
@@ -179,3 +212,17 @@ export interface BatchCreateResponse {
     max_concurrent_batches: number;
   };
 }
+
+// ─── Disposition color/tone mapping (for badges) ──────────────────────────
+export const VERDICT_TONE: Record<string, { bg: string; text: string; border: string }> = {
+  Critical: { bg: "bg-red-100",     text: "text-red-700",     border: "border-red-200" },
+  Negative: { bg: "bg-amber-100",   text: "text-amber-700",   border: "border-amber-200" },
+  Positive: { bg: "bg-emerald-100", text: "text-emerald-700", border: "border-emerald-200" },
+  Unknown:  { bg: "bg-slate-100",   text: "text-slate-600",   border: "border-slate-200" },
+};
+
+export const ROUTING_TONE: Record<string, { bg: string; text: string; label: string }> = {
+  auto_clear:               { bg: "bg-emerald-100", text: "text-emerald-800", label: "Auto-cleared" },
+  human_qc:                 { bg: "bg-amber-100",   text: "text-amber-800",   label: "Routed to human QC" },
+  compliance_escalation:    { bg: "bg-red-100",     text: "text-red-800",     label: "Compliance escalation" },
+};

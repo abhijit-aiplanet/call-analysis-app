@@ -5,23 +5,24 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Sparkles, MessageSquare, ListChecks, Tag, ArrowLeft,
-  FileText, Brain, Heart, Users, ShieldAlert, DollarSign,
-  AlertTriangle, XCircle,
+  Sparkles, MessageSquare, Tag, ArrowLeft,
+  ShieldAlert, AlertTriangle, CheckCircle2,
+  FileText, ShieldCheck, MessageCircle, UserCheck, DollarSign,
+  XCircle, Gavel,
 } from "lucide-react";
 
 import { createBatch, getBatch } from "./api";
 import type { BatchJob, BatchFileEntry, AnalysisRecord } from "./types";
+import { VERDICT_TONE, ROUTING_TONE } from "./types";
 import { BatchUploader } from "./BatchUploader";
 import { BatchProgress } from "./BatchProgress";
 import { BatchSummary } from "./BatchSummary";
 import { FileSelector } from "./FileSelector";
 import { CostBreakdown } from "./CostBreakdown";
-import { IntelligenceView } from "./views/IntelligenceView";
-import { EmotionView } from "./views/EmotionView";
-import { PerformanceView } from "./views/PerformanceView";
-import { ResolutionView } from "./views/ResolutionView";
+import { VerdictView } from "./views/VerdictView";
+import { IdentityCheckView } from "./views/IdentityCheckView";
 import { RiskView } from "./views/RiskView";
+import { ConversationView } from "./views/ConversationView";
 
 type PageState = "uploading" | "submitting" | "processing" | "done";
 
@@ -30,20 +31,18 @@ const CallAnalysisPipeline = () => {
   const [job, setJob] = useState<BatchJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedFileIdx, setSelectedFileIdx] = useState(0);
-  const [activeTab, setActiveTab] = useState("summary");
-  const pollIntervalRef = useRef<number | null>(null);
+  const [activeTab, setActiveTab] = useState("verdict");
+  const pollTimeoutRef = useRef<number | null>(null);
 
-  // Polling effect
   useEffect(() => {
     if (!job || pageState === "done") return;
     if (job.status === "completed" || job.status === "completed_with_errors" || job.status === "failed") {
       setPageState("done");
-      // pick first OK file
       const firstOk = job.files.findIndex((f) => f.status === "ok");
       if (firstOk >= 0) setSelectedFileIdx(firstOk);
       return;
     }
-    pollIntervalRef.current = window.setTimeout(async () => {
+    pollTimeoutRef.current = window.setTimeout(async () => {
       try {
         const updated = await getBatch(job.job_id);
         setJob(updated);
@@ -52,9 +51,9 @@ const CallAnalysisPipeline = () => {
       }
     }, 2000) as unknown as number;
     return () => {
-      if (pollIntervalRef.current) {
-        clearTimeout(pollIntervalRef.current);
-        pollIntervalRef.current = null;
+      if (pollTimeoutRef.current) {
+        clearTimeout(pollTimeoutRef.current);
+        pollTimeoutRef.current = null;
       }
     };
   }, [job, pageState]);
@@ -64,7 +63,6 @@ const CallAnalysisPipeline = () => {
     setError(null);
     try {
       const resp = await createBatch(files, keyterms);
-      // immediately fetch the initial job state
       const initial = await getBatch(resp.job_id);
       setJob(initial);
       setPageState("processing");
@@ -79,22 +77,20 @@ const CallAnalysisPipeline = () => {
     setJob(null);
     setError(null);
     setSelectedFileIdx(0);
-    setActiveTab("summary");
+    setActiveTab("verdict");
     setPageState("uploading");
   };
 
   const selectedFile: BatchFileEntry | null = job?.files[selectedFileIdx] ?? null;
   const selectedResult: AnalysisRecord | null = selectedFile?.result ?? null;
-  const syn = selectedResult?.stage_2_sentiment_multi_agent.synthesizer.output as Record<string, unknown> | undefined;
 
   return (
     <Layout
-      title="Call Analysis Pipeline"
-      description="ElevenLabs Scribe v2 STT (code-mixed Indian-language transcripts, with diarization) + 6-agent system + granular per-stage cost tracking. Upload one call or batch up to 50."
-      category="Financial Banking"
+      title="RCU AI Verification"
+      description="Bajaj Auto Credit · Risk Containment Unit · automated Telephonic Confirmation. ElevenLabs Scribe v2 STT + 4-specialist verification + Decision Agent. Outputs verdict (Positive / Negative / Critical), disposition, confidence, and routing — all in under 5 minutes per call."
+      category="Risk Containment Unit"
     >
       <div className="space-y-6 font-inter">
-        {/* Stage: uploading / submitting */}
         {(pageState === "uploading" || pageState === "submitting") && (
           <BatchUploader
             onSubmit={handleSubmit}
@@ -103,10 +99,9 @@ const CallAnalysisPipeline = () => {
           />
         )}
 
-        {/* Stage: processing or done */}
         {(pageState === "processing" || pageState === "done") && job && (
           <>
-            {/* Header strip with reset */}
+            {/* Header strip */}
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="flex items-center gap-2 flex-wrap">
                 {job.keyterms.length > 0 && (
@@ -115,9 +110,6 @@ const CallAnalysisPipeline = () => {
                     {job.keyterms.length} keyterm{job.keyterms.length !== 1 ? "s" : ""}
                   </Badge>
                 )}
-                <Badge variant="outline" className="bg-slate-50 text-slate-600 border-slate-200 font-normal text-[10px]">
-                  Concurrency: {/* this is fine to hardcode shown */} 5 files in flight
-                </Badge>
               </div>
               <Button variant="outline" size="sm" onClick={handleReset} className="h-8">
                 <ArrowLeft className="size-3.5 mr-1.5" />
@@ -125,29 +117,23 @@ const CallAnalysisPipeline = () => {
               </Button>
             </div>
 
-            {/* Always show progress (during) or summary (after) */}
             {pageState === "processing" && <BatchProgress job={job} />}
 
-            {pageState === "done" && job.aggregate_cost && (
-              <BatchSummary job={job} />
-            )}
+            {pageState === "done" && job.aggregate_cost && <BatchSummary job={job} />}
 
-            {/* Failed-files panel — visible whenever any file errored, so the user
-                always sees the actual error message instead of just "1 failed". */}
             {pageState === "done" && job.failed_count > 0 && (
               <FailedFilesPanel job={job} />
             )}
 
-            {/* Once we have at least one ok file, show per-file selector + details */}
             {job.files.some((f) => f.status === "ok") && (
               <>
                 <FileSelector
                   files={job.files}
                   selectedIdx={selectedFileIdx}
-                  onSelect={(i) => { setSelectedFileIdx(i); setActiveTab("summary"); }}
+                  onSelect={(i) => { setSelectedFileIdx(i); setActiveTab("verdict"); }}
                 />
 
-                {selectedResult && syn && (
+                {selectedResult && (
                   <PerFileDetail
                     result={selectedResult}
                     activeTab={activeTab}
@@ -171,23 +157,34 @@ interface PerFileDetailProps {
 }
 
 const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) => {
-  const syn = result.stage_2_sentiment_multi_agent.synthesizer.output as Record<string, unknown>;
-  const specs = result.stage_2_sentiment_multi_agent.specialists;
-  const tag = syn?.one_line_call_tag as string | undefined;
-  const headline = syn?.headline_metrics as Record<string, unknown> | undefined;
-  const execSummary = syn?.executive_summary as string | undefined;
+  const verdict = result.rcu_verdict;
+  const specs = result.stage_2_verification.specialists;
+  const verdictTone = VERDICT_TONE[verdict.verdict || "Unknown"] || VERDICT_TONE.Unknown;
+  const routingTone = ROUTING_TONE[verdict.decision_routing || ""] ||
+    { bg: "bg-slate-100", text: "text-slate-600", label: verdict.decision_routing || "—" };
 
   return (
     <div className="space-y-4">
-      {/* Headline tag */}
-      <Card className="rounded-2xl border-emerald-200/70 bg-gradient-to-br from-emerald-50/40 to-white">
+      {/* Always-visible verdict strip */}
+      <Card className={`rounded-2xl border-2 ${verdictTone.border} ${verdictTone.bg.replace("100", "50/50")}`}>
         <CardContent className="p-4 flex items-center gap-3 flex-wrap">
-          <Sparkles className="size-5 text-emerald-600 flex-shrink-0" />
-          <div className="flex-1 min-w-0">
-            <div className="text-[10px] font-medium text-emerald-700 uppercase tracking-wider">Call Tag</div>
-            <div className="text-base font-semibold text-slate-900">{tag || "—"}</div>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap text-[11px]">
+          <Badge className={`${verdictTone.bg} ${verdictTone.text} ${verdictTone.border} font-bold text-base px-4 py-1.5`}>
+            {verdict.verdict === "Critical" && <ShieldAlert className="size-4 mr-1.5" />}
+            {verdict.verdict === "Negative" && <AlertTriangle className="size-4 mr-1.5" />}
+            {verdict.verdict === "Positive" && <CheckCircle2 className="size-4 mr-1.5" />}
+            {verdict.verdict || "—"}
+          </Badge>
+          <Badge variant="outline" className="bg-white font-medium text-slate-800">
+            {verdict.disposition || "—"}
+          </Badge>
+          <Badge variant="outline" className="bg-white text-slate-700">
+            Caller: {verdict.caller_type || "Unknown"}
+          </Badge>
+          <Badge className={`${routingTone.bg} ${routingTone.text} font-medium`}>
+            <Gavel className="size-3 mr-1" />
+            {routingTone.label}
+          </Badge>
+          <div className="ml-auto flex items-center gap-2 flex-wrap text-[11px]">
             <Badge variant="outline" className="bg-white font-mono">
               {result.audio_meta.language_code}
               {result.audio_meta.language_probability != null && (
@@ -208,23 +205,17 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="bg-slate-100/60 p-1 rounded-xl">
-          <TabsTrigger value="summary" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <FileText className="size-3.5 mr-1.5" /> Summary
+          <TabsTrigger value="verdict" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <Sparkles className="size-3.5 mr-1.5" /> Verdict
           </TabsTrigger>
-          <TabsTrigger value="intel" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <Brain className="size-3.5 mr-1.5" /> Intelligence
-          </TabsTrigger>
-          <TabsTrigger value="emotion" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <Heart className="size-3.5 mr-1.5" /> Emotion
-          </TabsTrigger>
-          <TabsTrigger value="performance" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <Users className="size-3.5 mr-1.5" /> Agent
-          </TabsTrigger>
-          <TabsTrigger value="resolution" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <ListChecks className="size-3.5 mr-1.5" /> Resolution
+          <TabsTrigger value="identity" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <UserCheck className="size-3.5 mr-1.5" /> Identity
           </TabsTrigger>
           <TabsTrigger value="risk" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
-            <ShieldAlert className="size-3.5 mr-1.5" /> Risk
+            <ShieldCheck className="size-3.5 mr-1.5" /> Risk
+          </TabsTrigger>
+          <TabsTrigger value="conversation" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
+            <MessageCircle className="size-3.5 mr-1.5" /> Conversation
           </TabsTrigger>
           <TabsTrigger value="transcript" className="data-[state=active]:bg-white data-[state=active]:shadow-sm">
             <MessageSquare className="size-3.5 mr-1.5" /> Transcript
@@ -234,108 +225,25 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
           </TabsTrigger>
         </TabsList>
 
-        {/* ─── Summary tab (synthesizer output) ────────────────────────── */}
-        <TabsContent value="summary" className="space-y-4 mt-4">
-          <Card className="rounded-2xl border-slate-200">
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2.5 text-base font-semibold">
-                <FileText className="size-4 text-blue-600" />
-                <span>Executive Summary</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm leading-relaxed text-slate-700">{execSummary || "—"}</p>
-            </CardContent>
-          </Card>
-
-          {headline && (
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5">
-              {Object.entries(headline).map(([k, v]) => (
-                <div key={k} className="rounded-xl bg-white border border-slate-200 p-3">
-                  <div className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-1">
-                    {k.replace(/_/g, " ")}
-                  </div>
-                  <div className="text-sm font-semibold text-slate-900 break-words">{String(v)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {Array.isArray(syn?.key_findings) && (syn?.key_findings as unknown[]).length > 0 && (
-            <Card className="rounded-2xl border-slate-200">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-                  <ListChecks className="size-4 text-purple-600" />
-                  <span>Key Findings</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ol className="space-y-2">
-                  {(syn?.key_findings as string[]).map((f, i) => (
-                    <li key={i} className="flex gap-3 text-sm text-slate-700">
-                      <span className="flex-shrink-0 mt-0.5 size-5 rounded-full bg-purple-50 text-purple-700 text-[11px] font-semibold border border-purple-200 flex items-center justify-center">
-                        {i + 1}
-                      </span>
-                      <span className="leading-relaxed">{f}</span>
-                    </li>
-                  ))}
-                </ol>
-              </CardContent>
-            </Card>
-          )}
-
-          {Array.isArray(syn?.next_best_actions) && (syn?.next_best_actions as unknown[]).length > 0 && (
-            <Card className="rounded-2xl border-slate-200">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2.5">
-                  <ShieldAlert className="size-4 text-emerald-600" />
-                  <span>Next Best Actions</span>
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-2">
-                  {(syn?.next_best_actions as Array<Record<string, unknown>>).map((a, i) => (
-                    <div key={i} className="rounded-lg bg-slate-50/70 border border-slate-100 p-3">
-                      <div className="text-sm text-slate-800">{String(a.action)}</div>
-                      <div className="flex flex-wrap gap-1.5 mt-1.5">
-                        {a.owner && <Badge variant="outline" className="text-[10px] py-0">owner: {String(a.owner)}</Badge>}
-                        {a.priority && (
-                          <Badge variant="outline" className={`text-[10px] py-0 ${
-                            a.priority === "high" ? "bg-red-50 text-red-700 border-red-200"
-                            : a.priority === "medium" ? "bg-amber-50 text-amber-700 border-amber-200"
-                            : "bg-slate-50 text-slate-600"
-                          }`}>
-                            {String(a.priority)}
-                          </Badge>
-                        )}
-                        {a.timeline && <Badge variant="outline" className="text-[10px] py-0">{String(a.timeline)}</Badge>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
+        <TabsContent value="verdict"      className="mt-4"><VerdictView         verdict={verdict} /></TabsContent>
+        <TabsContent value="identity"     className="mt-4">
+          <IdentityCheckView
+            identityVerificationOutput={specs.identity_verification.output}
+            informationExtractionOutput={specs.information_extraction.output}
+          />
         </TabsContent>
+        <TabsContent value="risk"         className="mt-4"><RiskView            output={specs.fraud_risk.output} /></TabsContent>
+        <TabsContent value="conversation" className="mt-4"><ConversationView    output={specs.conversation_behavior.output} /></TabsContent>
 
-        {/* ─── Specialist tabs ────────────────────────────────────────── */}
-        <TabsContent value="intel"       className="mt-4"><IntelligenceView output={specs.intelligence.output} /></TabsContent>
-        <TabsContent value="emotion"     className="mt-4"><EmotionView      output={specs.emotion.output} /></TabsContent>
-        <TabsContent value="performance" className="mt-4"><PerformanceView  output={specs.performance.output} /></TabsContent>
-        <TabsContent value="resolution"  className="mt-4"><ResolutionView   output={specs.resolution.output} /></TabsContent>
-        <TabsContent value="risk"        className="mt-4"><RiskView         output={specs.risk.output} /></TabsContent>
-
-        {/* ─── Transcript tab ─────────────────────────────────────────── */}
         <TabsContent value="transcript" className="mt-4">
           <TranscriptView result={result} />
         </TabsContent>
 
-        {/* ─── Cost tab ──────────────────────────────────────────────── */}
         <TabsContent value="cost" className="mt-4">
           <CostBreakdown
             unified={result.unified_cost}
             sttCost={result.stage_1_stt.cost}
-            sentiment={result.stage_2_sentiment_multi_agent}
+            verification={result.stage_2_verification}
             audioMinutes={result.audio_meta.audio_minutes}
           />
         </TabsContent>
@@ -344,19 +252,29 @@ const PerFileDetail = ({ result, activeTab, setActiveTab }: PerFileDetailProps) 
   );
 };
 
-// ─── Transcript view with per-utterance emotion shading ────────────────────
+// ─── Transcript view ───────────────────────────────────────────────────────
 const TranscriptView = ({ result }: { result: AnalysisRecord }) => {
   const utterances = result.stage_1_stt.utterances;
-  const emotionOut = result.stage_2_sentiment_multi_agent.specialists.emotion.output as Record<string, unknown>;
-  const perUtt = (emotionOut?.per_utterance as Array<{ idx?: number; emotion?: string; intensity_1_10?: number; tonality?: string }>) || [];
+  const behaviorOut = result.stage_2_verification.specialists.conversation_behavior.output as Record<string, unknown>;
+  const perUtt = (behaviorOut?.per_utterance as Array<{ idx?: number; speaker_role?: string; behavior_tag?: string }>) || [];
 
-  const emotionToBorderColor = (emotion?: string, intensity?: number): string => {
-    const i = intensity ?? 5;
-    const positive = ["joy", "satisfaction"];
-    const negative = ["anger", "fear", "sadness", "disgust", "frustration", "anxiety"];
-    if (positive.includes(emotion || "")) return i > 6 ? "border-l-emerald-500" : "border-l-emerald-300";
-    if (negative.includes(emotion || "")) return i > 6 ? "border-l-red-500" : "border-l-amber-400";
+  const borderColorFor = (idx: number): string => {
+    const tag = perUtt[idx]?.behavior_tag || "neutral";
+    if (["prompted_by_third_party", "contradictory", "evasive", "irate", "defensive"].includes(tag))
+      return "border-l-red-500";
+    if (["fumbling", "hesitant", "rushed_through", "rehearsed"].includes(tag))
+      return "border-l-amber-400";
+    if (["cooperative"].includes(tag))
+      return "border-l-emerald-400";
     return "border-l-slate-200";
+  };
+
+  const roleLabel = (idx: number): string | null => {
+    const role = perUtt[idx]?.speaker_role;
+    if (role === "agent") return "AGENT";
+    if (role === "subject") return "SUBJECT";
+    if (role === "third_party") return "3RD-PARTY";
+    return null;
   };
 
   return (
@@ -382,38 +300,36 @@ const TranscriptView = ({ result }: { result: AnalysisRecord }) => {
       <CardContent>
         <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
           {utterances.map((u, i) => {
-            const e = perUtt[i];
-            const borderClass = emotionToBorderColor(e?.emotion, e?.intensity_1_10);
+            const role = roleLabel(i);
+            const tag = perUtt[i]?.behavior_tag;
             const t = u.start_s ?? 0;
             const mm = Math.floor(t / 60);
             const ss = Math.floor(t % 60);
             return (
               <div
                 key={i}
-                className={`flex gap-3 pl-3 py-2 border-l-2 ${borderClass} bg-slate-50/40 hover:bg-slate-50 rounded-r-lg transition-colors`}
+                className={`flex gap-3 pl-3 py-2 border-l-2 ${borderColorFor(i)} bg-slate-50/40 hover:bg-slate-50 rounded-r-lg transition-colors`}
               >
                 <div className="flex-shrink-0 text-[11px] text-slate-400 font-mono pt-0.5 w-12">
                   {String(mm).padStart(2, "0")}:{String(ss).padStart(2, "0")}
                 </div>
-                <div className="flex-shrink-0 w-20">
-                  <Badge variant="outline" className="text-[10px] font-mono py-0">
-                    {u.speaker || "?"}
+                <div className="flex-shrink-0 w-24">
+                  <Badge variant="outline" className={`text-[10px] font-mono py-0 ${
+                    role === "AGENT" ? "bg-blue-50 text-blue-700 border-blue-200" :
+                    role === "SUBJECT" ? "bg-emerald-50 text-emerald-700 border-emerald-200" :
+                    role === "3RD-PARTY" ? "bg-red-50 text-red-700 border-red-200" :
+                    "bg-slate-50"
+                  }`}>
+                    {role || u.speaker || "?"}
                   </Badge>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm text-slate-800 leading-relaxed">{u.text}</div>
-                  {e && (e.emotion || e.tonality) && (
-                    <div className="flex gap-1.5 flex-wrap mt-1">
-                      {e.emotion && (
-                        <Badge variant="outline" className="text-[9px] py-0 bg-white">
-                          {e.emotion}{e.intensity_1_10 ? ` ${e.intensity_1_10}/10` : ""}
-                        </Badge>
-                      )}
-                      {e.tonality && (
-                        <Badge variant="outline" className="text-[9px] py-0 bg-white text-slate-500">
-                          {e.tonality}
-                        </Badge>
-                      )}
+                  {tag && tag !== "neutral" && (
+                    <div className="mt-1">
+                      <Badge variant="outline" className="text-[9px] py-0 bg-white text-slate-600">
+                        {tag}
+                      </Badge>
                     </div>
                   )}
                 </div>
@@ -426,34 +342,29 @@ const TranscriptView = ({ result }: { result: AnalysisRecord }) => {
   );
 };
 
-// ─── Failed Files Panel ─────────────────────────────────────────────────────
-// Shown when one or more files in the batch errored, so the user can see the
-// actual reason (e.g. ElevenLabs quota_exceeded, Azure 500, invalid audio, ...)
-// instead of just seeing zeros in the BatchSummary.
+// ─── Failed Files Panel (kept from prior build) ────────────────────────────
 const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
   const failed = job.files.filter((f) => f.status === "error");
   if (failed.length === 0) return null;
 
-  // Detect common error patterns and surface friendly explanations.
   const friendly = (err: string | null): { hint: string; tone: "red" | "amber" } | null => {
     if (!err) return null;
     const lower = err.toLowerCase();
     if (lower.includes("detected_unusual_activity") || lower.includes("free tier usage disabled"))
       return {
-        hint:
-          "ElevenLabs has disabled free-tier access for this API key (their abuse detector flagged the usage pattern, often triggered by multi-region traffic). Fix: upgrade to ElevenLabs Starter ($5/mo) at elevenlabs.io/app/subscription — the existing key will keep working.",
+        hint: "ElevenLabs disabled free-tier access for this key. Upgrade to Starter ($5/mo) at elevenlabs.io/app/subscription.",
         tone: "red",
       };
     if (lower.includes("quota_exceeded") || lower.includes("credits remaining"))
-      return { hint: "ElevenLabs Scribe quota exhausted. Top up credits at elevenlabs.io/app/account.", tone: "red" };
+      return { hint: "ElevenLabs Scribe quota exhausted. Top up credits.", tone: "red" };
     if (lower.includes("deploymentnotfound") || lower.includes("404"))
-      return { hint: "Azure OpenAI deployment not reachable — transient. Retry usually fixes it.", tone: "amber" };
+      return { hint: "Azure OpenAI deployment hiccup — retry usually fixes it.", tone: "amber" };
     if (lower.includes("internalserver") || lower.includes("500"))
-      return { hint: "Azure / vendor 500. Transient. Click 'New Batch' and retry.", tone: "amber" };
+      return { hint: "Azure / vendor 500. Retry.", tone: "amber" };
     if (lower.includes("invalid_request") || lower.includes("invalid audio"))
-      return { hint: "Audio file may be empty, corrupt, or in an unsupported format.", tone: "red" };
+      return { hint: "Audio file may be empty, corrupt, or unsupported format.", tone: "red" };
     if (lower.includes("timeout") || lower.includes("connectionerror"))
-      return { hint: "Network timeout — possibly cold-start on the backend. Retry.", tone: "amber" };
+      return { hint: "Network timeout — possibly cold-start. Retry.", tone: "amber" };
     return null;
   };
 
@@ -462,9 +373,7 @@ const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2.5 text-base font-semibold text-red-900">
           <AlertTriangle className="size-5 text-red-600" />
-          <span>
-            {failed.length} of {job.file_count} file{failed.length !== 1 ? "s" : ""} failed
-          </span>
+          <span>{failed.length} of {job.file_count} file{failed.length !== 1 ? "s" : ""} failed</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -478,13 +387,11 @@ const FailedFilesPanel = ({ job }: { job: BatchJob }) => {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-slate-800 truncate">{f.filename}</div>
                     {f_hint && (
-                      <div
-                        className={`mt-1.5 px-2.5 py-1.5 rounded text-xs ${
-                          f_hint.tone === "red"
-                            ? "bg-red-100 text-red-800 border border-red-200"
-                            : "bg-amber-100 text-amber-800 border border-amber-200"
-                        }`}
-                      >
+                      <div className={`mt-1.5 px-2.5 py-1.5 rounded text-xs ${
+                        f_hint.tone === "red"
+                          ? "bg-red-100 text-red-800 border border-red-200"
+                          : "bg-amber-100 text-amber-800 border border-amber-200"
+                      }`}>
                         {f_hint.hint}
                       </div>
                     )}

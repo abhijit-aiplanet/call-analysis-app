@@ -118,38 +118,47 @@ def _compute_aggregate(job: BatchJob, wall_start_ts: float, wall_end_ts: float) 
 
     if not ok_files:
         return {
-            "total_files":         job.file_count,
-            "completed_files":     0,
-            "failed_files":        len(err_files),
-            "total_audio_seconds": 0,
-            "total_audio_minutes": 0,
-            "total_audio_hours":   0,
-            "total_stt_usd":       0.0,
-            "total_sentiment_usd": 0.0,
-            "total_pipeline_usd":  0.0,
+            "total_files":           job.file_count,
+            "completed_files":       0,
+            "failed_files":          len(err_files),
+            "total_audio_seconds":   0,
+            "total_audio_minutes":   0,
+            "total_audio_hours":     0,
+            "total_stt_usd":         0.0,
+            "total_verification_usd": 0.0,
+            "total_pipeline_usd":    0.0,
             "avg_cost_per_call_usd":          0.0,
             "avg_cost_per_minute_audio_usd":  0.0,
+            "verdict_distribution":  {},
             "wall_time_seconds":   round(wall_end_ts - wall_start_ts, 2),
         }
 
     total_audio_s = sum(f.result["audio_meta"]["audio_duration_s"] for f in ok_files)
-    total_stt   = sum(f.result["unified_cost"]["stt_usd"]       for f in ok_files)
-    total_sent  = sum(f.result["unified_cost"]["sentiment_usd"] for f in ok_files)
-    total_pipe  = sum(f.result["unified_cost"]["total_usd"]     for f in ok_files)
+    total_stt     = sum(f.result["unified_cost"]["stt_usd"]          for f in ok_files)
+    total_verif   = sum(f.result["unified_cost"]["verification_usd"] for f in ok_files)
+    total_pipe    = sum(f.result["unified_cost"]["total_usd"]        for f in ok_files)
+
+    # Verdict distribution across the batch — useful for batch summary view.
+    from collections import Counter
+    verdicts = Counter(
+        (f.result.get("rcu_verdict") or {}).get("verdict") or "Unknown"
+        for f in ok_files
+    )
 
     audio_minutes = total_audio_s / 60
     return {
-        "total_files":         job.file_count,
-        "completed_files":     len(ok_files),
-        "failed_files":        len(err_files),
-        "total_audio_seconds": round(total_audio_s, 2),
-        "total_audio_minutes": round(audio_minutes, 4),
-        "total_audio_hours":   round(audio_minutes / 60, 6),
-        "total_stt_usd":       round(total_stt, 8),
-        "total_sentiment_usd": round(total_sent, 8),
-        "total_pipeline_usd":  round(total_pipe, 8),
+        "total_files":           job.file_count,
+        "completed_files":       len(ok_files),
+        "failed_files":          len(err_files),
+        "total_audio_seconds":   round(total_audio_s, 2),
+        "total_audio_minutes":   round(audio_minutes, 4),
+        "total_audio_hours":     round(audio_minutes / 60, 6),
+        "total_stt_usd":         round(total_stt, 8),
+        "total_verification_usd": round(total_verif, 8),
+        "total_pipeline_usd":    round(total_pipe, 8),
         "avg_cost_per_call_usd":          round(total_pipe / max(len(ok_files), 1), 8),
         "avg_cost_per_minute_audio_usd":  round(total_pipe / max(audio_minutes, 1e-9), 8) if audio_minutes > 0 else None,
+        "verdict_distribution":  dict(verdicts),
         "wall_time_seconds":   round(wall_end_ts - wall_start_ts, 2),
         "audio_minutes_per_wall_minute":  round(
             (audio_minutes * 60) / max(wall_end_ts - wall_start_ts, 1e-9), 2

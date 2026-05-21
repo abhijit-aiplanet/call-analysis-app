@@ -1,6 +1,15 @@
-"""Call analysis pipeline: ElevenLabs Scribe v2 → Multi-agent sentiment.
+"""RCU AI Verification pipeline: ElevenLabs Scribe v2 → Multi-agent verification.
 
 No LLM translation step — agents read code-mixed transcripts directly.
+Pipeline stages:
+  Stage 1: STT + Diarization (ElevenLabs Scribe v2)
+  Stage 2: Multi-Agent Verification:
+    - 4 specialists in parallel: Information Extraction (also auto-detects
+      caller type), Identity Verification, Fraud Risk, Conversation Behavior
+    - 1 Disposition Classifier (the "Decision Agent") that synthesizes the
+      4 specialist outputs into the final verdict, disposition, confidence,
+      and auto-QC routing decision.
+
 Granular cost tracking at the token + per-stage level.
 """
 import os, json, time, traceback
@@ -192,24 +201,34 @@ def _run_specialist(client, deployment, name, transcript_for_prompt):
 
 
 def _run_synthesizer(client, deployment, transcript_for_prompt, specialist_results):
+    """Disposition Classifier — the RCU Decision Agent."""
     body = {
-        "specialist_1_call_intelligence":  specialist_results["intelligence"],
-        "specialist_2_emotion_tonality":   specialist_results["emotion"],
-        "specialist_3_agent_performance":  specialist_results["performance"],
-        "specialist_4_resolution_pain":    specialist_results["resolution"],
-        "specialist_5_risk_compliance":    specialist_results["risk"],
+        "specialist_1_information_extraction":  specialist_results["information_extraction"],
+        "specialist_2_identity_verification":   specialist_results["identity_verification"],
+        "specialist_3_fraud_risk":              specialist_results["fraud_risk"],
+        "specialist_4_conversation_behavior":   specialist_results["conversation_behavior"],
     }
     user = (
         f"TRANSCRIPT (code-mixed Indian languages):\n\n{transcript_for_prompt}\n\n"
         f"SPECIALIST REPORTS:\n\n{json.dumps(body, ensure_ascii=False, indent=2)}\n\n"
-        f"Synthesize per your role and return ONLY the required JSON."
+        f"Apply the Disposition Selection Rules and return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_SYNTHESIZER, user, max_tokens=2500)
     return result, cost
 
 
-def run_multi_agent_sentiment(llm_client, deployment, utterances, max_workers=5):
-    """5 specialists in parallel + 1 synthesizer (sequential)."""
+def run_multi_agent_verification(llm_client, deployment, utterances, max_workers=5):
+    """4 RCU specialists in parallel + 1 Disposition Classifier (sequential).
+
+    Specialists:
+      - information_extraction (also auto-detects caller type)
+      - identity_verification
+      - fraud_risk
+      - conversation_behavior
+
+    Decision agent:
+      - disposition_classifier (final verdict + disposition + confidence + auto-QC routing)
+    """
     transcript_for_prompt = _format_transcript_for_prompt(utterances)
     t_overall = time.time()
 
@@ -238,20 +257,20 @@ def run_multi_agent_sentiment(llm_client, deployment, utterances, max_workers=5)
             name: {"output": spec_results[name], "cost": spec_costs[name]}
             for name in SPECIALIST_REGISTRY
         },
-        "synthesizer": {"output": synth_out, "cost": synth_cost},
+        "decision_agent": {"output": synth_out, "cost": synth_cost},
         "aggregate_cost": {
             "total_prompt_tokens":     total_in,
             "total_completion_tokens": total_out,
             "total_tokens":            total_in + total_out,
             "total_cost_usd":          round(total_usd, 8),
             "specialists_total_usd":   round(sum(c["cost_usd_total"] for c in spec_costs.values()), 8),
-            "synthesizer_usd":         synth_cost["cost_usd_total"],
+            "decision_agent_usd":      synth_cost["cost_usd_total"],
             "n_specialists":           len(spec_costs),
         },
         "timing": {
             "specialists_parallel_wall_s": round(t_spec_elapsed, 2),
-            "synthesizer_wall_s":          round(t_synth_elapsed, 2),
-            "total_sentiment_wall_s":      round(time.time() - t_overall, 2),
+            "decision_agent_wall_s":       round(t_synth_elapsed, 2),
+            "total_verification_wall_s":   round(time.time() - t_overall, 2),
         },
         "ran_at_utc": datetime.now(timezone.utc).isoformat(),
         "model": deployment,
@@ -266,7 +285,7 @@ def analyze_call_end_to_end(
     llm_deployment: str,
     keyterms: Optional[List[str]] = None,
 ):
-    """One call → STT (Scribe v2) → Multi-agent sentiment. Returns unified record."""
+    """One call → STT (Scribe v2) → Multi-agent verification. Returns unified record."""
     t_call = time.time()
 
     # Stage 1: STT
@@ -277,11 +296,14 @@ def analyze_call_end_to_end(
 
     speakers = sorted({u["speaker"] for u in utterances if u.get("speaker")})
 
-    # Stage 2: Multi-agent sentiment (code-mix aware, no translation step)
-    sentiment = run_multi_agent_sentiment(llm_client, llm_deployment, utterances)
+    # Stage 2: Multi-agent RCU verification (4 specialists + decision agent)
+    verification = run_multi_agent_verification(llm_client, llm_deployment, utterances)
+
+    # Pull the decision-agent verdict to the top level for easy frontend consumption
+    decision_output = verification.get("decision_agent", {}).get("output", {}) or {}
 
     # Unified cost summary
-    total_cost = stt_cost["cost_usd_total"] + sentiment["aggregate_cost"]["total_cost_usd"]
+    total_cost = stt_cost["cost_usd_total"] + verification["aggregate_cost"]["total_cost_usd"]
     audio_minutes = stt_cost["audio_minutes"]
     cost_per_min = total_cost / max(audio_minutes, 1e-9) if audio_minutes > 0 else None
 
@@ -298,6 +320,22 @@ def analyze_call_end_to_end(
             "transcription_id": stt_data.get("transcription_id"),
             "keyterms_applied": keyterms or [],
         },
+        # Top-level RCU verdict surface — mirrors the Decision Agent output for
+        # easy frontend consumption (verdict pill, disposition badge, routing chip).
+        "rcu_verdict": {
+            "verdict":                 decision_output.get("verdict"),
+            "verdict_confidence_1_10": decision_output.get("verdict_confidence_1_10"),
+            "disposition":             decision_output.get("disposition"),
+            "disposition_rcu_status":  decision_output.get("disposition_rcu_status"),
+            "caller_type":             decision_output.get("caller_type"),
+            "decision_routing":        decision_output.get("decision_routing"),
+            "routing_rationale":       decision_output.get("routing_rationale"),
+            "headline_chip":           decision_output.get("headline_chip"),
+            "executive_summary":       decision_output.get("executive_summary"),
+            "rationale":               decision_output.get("rationale"),
+            "risk_tags":               decision_output.get("risk_tags", []),
+            "key_evidence_quotes":     decision_output.get("key_evidence_quotes", []),
+        },
         "stage_1_stt": {
             "vendor": "ElevenLabs Scribe v2",
             "model_id": "scribe_v2",
@@ -305,18 +343,18 @@ def analyze_call_end_to_end(
             "utterances": utterances,
             "cost": stt_cost,
         },
-        "stage_2_sentiment_multi_agent": sentiment,
+        "stage_2_verification": verification,
         "unified_cost": {
-            "stt_usd":         stt_cost["cost_usd_total"],
-            "sentiment_usd":   sentiment["aggregate_cost"]["total_cost_usd"],
-            "specialists_usd": sentiment["aggregate_cost"]["specialists_total_usd"],
-            "synthesizer_usd": sentiment["aggregate_cost"]["synthesizer_usd"],
-            "total_usd":       round(total_cost, 8),
+            "stt_usd":            stt_cost["cost_usd_total"],
+            "verification_usd":   verification["aggregate_cost"]["total_cost_usd"],
+            "specialists_usd":    verification["aggregate_cost"]["specialists_total_usd"],
+            "decision_agent_usd": verification["aggregate_cost"]["decision_agent_usd"],
+            "total_usd":          round(total_cost, 8),
             "cost_per_minute_audio_usd": round(cost_per_min, 8) if cost_per_min is not None else None,
-            "total_wall_time_s": round(time.time() - t_call, 2),
+            "total_wall_time_s":  round(time.time() - t_call, 2),
             "stage_cost_share_pct": {
-                "stt":       round(100 * stt_cost["cost_usd_total"]                / max(total_cost, 1e-9), 2),
-                "sentiment": round(100 * sentiment["aggregate_cost"]["total_cost_usd"] / max(total_cost, 1e-9), 2),
+                "stt":          round(100 * stt_cost["cost_usd_total"]                       / max(total_cost, 1e-9), 2),
+                "verification": round(100 * verification["aggregate_cost"]["total_cost_usd"] / max(total_cost, 1e-9), 2),
             },
             "rate_card": RATE_CARD,
         },

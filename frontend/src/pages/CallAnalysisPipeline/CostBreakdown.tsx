@@ -2,28 +2,33 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { DollarSign, Clock, Mic, Brain, Layers } from "lucide-react";
-import type { UnifiedCost, SentimentAggregate, STTCost } from "./types";
+import type { UnifiedCost, VerificationAggregate, STTCost } from "./types";
 
-const fmtUSD = (n: number, digits = 6) =>
-  `$${n.toFixed(digits)}`;
-
+const fmtUSD = (n: number, digits = 6) => `$${n.toFixed(digits)}`;
 const fmtCents = (n: number) => `${(n * 100).toFixed(4)}¢`;
 
 interface CostBreakdownProps {
   unified: UnifiedCost;
   sttCost: STTCost;
-  sentiment: SentimentAggregate;
+  verification: VerificationAggregate;
   audioMinutes: number;
 }
 
-export const CostBreakdown = ({ unified, sttCost, sentiment, audioMinutes }: CostBreakdownProps) => {
+const SPECIALIST_LABELS: Record<string, string> = {
+  information_extraction: "Information Extraction (also caller-type detect)",
+  identity_verification:  "Identity Verification",
+  fraud_risk:             "Fraud Risk Detection",
+  conversation_behavior:  "Conversation Behavior",
+};
+
+export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: CostBreakdownProps) => {
   const sttPct = unified.stage_cost_share_pct.stt;
-  const sentPct = unified.stage_cost_share_pct.sentiment;
+  const verPct = unified.stage_cost_share_pct.verification;
 
   return (
     <div className="space-y-4">
       {/* Headline */}
-      <Card className="rounded-xl border-emerald-200 bg-emerald-50/30 hover:shadow-lg transition-all">
+      <Card className="rounded-2xl border-emerald-200 bg-emerald-50/30">
         <CardContent className="p-6">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
@@ -52,20 +57,12 @@ export const CostBreakdown = ({ unified, sttCost, sentiment, audioMinutes }: Cos
               <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1">
                 Audio Length
               </div>
-              <div className="text-2xl font-bold text-slate-800">
-                {audioMinutes.toFixed(2)} min
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                {sttCost.audio_seconds.toFixed(1)} s
-              </div>
+              <div className="text-2xl font-bold text-slate-800">{audioMinutes.toFixed(2)} min</div>
+              <div className="text-xs text-slate-500 mt-0.5">{sttCost.audio_seconds.toFixed(1)} s</div>
             </div>
             <div>
-              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1">
-                Wall Time
-              </div>
-              <div className="text-2xl font-bold text-slate-800">
-                {unified.total_wall_time_s.toFixed(1)} s
-              </div>
+              <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1">Wall Time</div>
+              <div className="text-2xl font-bold text-slate-800">{unified.total_wall_time_s.toFixed(1)} s</div>
               <div className="text-xs text-slate-500 mt-0.5">
                 {(audioMinutes * 60 / Math.max(unified.total_wall_time_s, 1)).toFixed(1)}× real-time
               </div>
@@ -75,7 +72,7 @@ export const CostBreakdown = ({ unified, sttCost, sentiment, audioMinutes }: Cos
       </Card>
 
       {/* Stage Split */}
-      <Card className="rounded-xl border-slate-200">
+      <Card className="rounded-2xl border-slate-200">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-3 text-base font-semibold">
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-2">
@@ -101,84 +98,86 @@ export const CostBreakdown = ({ unified, sttCost, sentiment, audioMinutes }: Cos
             <div className="text-xs text-slate-500 mt-1.5 ml-6">
               base @ ${sttCost.rate_per_hour_base.toFixed(2)}/hr
               {sttCost.cost_usd_keyterms > 0 && (
-                <> + keyterms @ ${sttCost.rate_per_hour_keyterms.toFixed(2)}/hr</>
-              )}
-              {sttCost.cost_usd_keyterms > 0 && (
-                <> (+{fmtUSD(sttCost.cost_usd_keyterms)} for keyterm bias)</>
+                <> + keyterms @ ${sttCost.rate_per_hour_keyterms.toFixed(2)}/hr (+{fmtUSD(sttCost.cost_usd_keyterms)})</>
               )}
             </div>
           </div>
 
-          {/* Sentiment */}
+          {/* Verification */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
                 <Brain className="size-4 text-emerald-600" />
-                <span className="text-sm font-medium text-slate-700">Multi-Agent Sentiment (gpt-4o-mini)</span>
+                <span className="text-sm font-medium text-slate-700">Multi-Agent Verification (gpt-4o-mini)</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-slate-900">{fmtUSD(unified.sentiment_usd)}</span>
-                <Badge variant="outline" className="text-xs font-normal">{sentPct.toFixed(1)}%</Badge>
+                <span className="text-sm font-semibold text-slate-900">{fmtUSD(unified.verification_usd)}</span>
+                <Badge variant="outline" className="text-xs font-normal">{verPct.toFixed(1)}%</Badge>
               </div>
             </div>
-            <Progress value={sentPct} className="h-2 bg-slate-100" />
+            <Progress value={verPct} className="h-2 bg-slate-100" />
             <div className="text-xs text-slate-500 mt-1.5 ml-6">
-              5 specialists ({fmtUSD(unified.specialists_usd)}) + synthesizer ({fmtUSD(unified.synthesizer_usd)})
-              <span className="text-slate-400"> · {sentiment.aggregate_cost.total_tokens.toLocaleString()} tokens</span>
+              4 specialists ({fmtUSD(unified.specialists_usd)}) + decision agent ({fmtUSD(unified.decision_agent_usd)})
+              <span className="text-slate-400"> · {verification.aggregate_cost.total_tokens.toLocaleString()} tokens</span>
             </div>
           </div>
         </CardContent>
       </Card>
 
       {/* Per-Agent Breakdown */}
-      <Card className="rounded-xl border-slate-200">
+      <Card className="rounded-2xl border-slate-200">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-3 text-base font-semibold">
             <div className="bg-purple-50 border border-purple-200 rounded-lg p-2">
               <Brain className="size-4 text-purple-600" />
             </div>
-            <span>Per-Agent Cost (Multi-Agent System)</span>
+            <span>Per-Agent Cost</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
-            {[
-              { key: "intelligence", label: "Call Intelligence",       data: sentiment.specialists.intelligence.cost },
-              { key: "emotion",      label: "Emotion & Tonality",      data: sentiment.specialists.emotion.cost },
-              { key: "performance",  label: "Agent Performance",       data: sentiment.specialists.performance.cost },
-              { key: "resolution",   label: "Resolution & Pain Points",data: sentiment.specialists.resolution.cost },
-              { key: "risk",         label: "Risk & Compliance",       data: sentiment.specialists.risk.cost },
-              { key: "synthesizer",  label: "Synthesizer",             data: sentiment.synthesizer.cost,
-                isSynth: true },
-            ].map(({ key, label, data, isSynth }) => (
-              <div key={key} className={`grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg ${
-                  isSynth ? "bg-amber-50/40 border border-amber-100" : "hover:bg-slate-50"
-                }`}>
-                <div className="col-span-4 text-sm font-medium text-slate-700">{label}</div>
+            {Object.entries(verification.specialists).map(([key, payload]) => (
+              <div key={key} className="grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg hover:bg-slate-50">
+                <div className="col-span-4 text-sm font-medium text-slate-700">
+                  {SPECIALIST_LABELS[key] || key}
+                </div>
                 <div className="col-span-3 text-xs text-slate-500">
-                  in: {data.prompt_tokens.toLocaleString()} / out: {data.completion_tokens.toLocaleString()}
+                  in: {payload.cost.prompt_tokens.toLocaleString()} / out: {payload.cost.completion_tokens.toLocaleString()}
                 </div>
                 <div className="col-span-3 text-xs text-slate-500">
                   <Clock className="inline size-3 mr-1" />
-                  {(data.wall_time_s ?? 0).toFixed(1)}s
+                  {(payload.cost.wall_time_s ?? 0).toFixed(1)}s
                 </div>
                 <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
-                  {fmtUSD(data.cost_usd_total)}
+                  {fmtUSD(payload.cost.cost_usd_total)}
                 </div>
               </div>
             ))}
+            <div className="grid grid-cols-12 gap-3 items-center px-3 py-2 rounded-lg bg-amber-50/40 border border-amber-100">
+              <div className="col-span-4 text-sm font-medium text-slate-700">Decision Agent (Disposition Classifier)</div>
+              <div className="col-span-3 text-xs text-slate-500">
+                in: {verification.decision_agent.cost.prompt_tokens.toLocaleString()} / out: {verification.decision_agent.cost.completion_tokens.toLocaleString()}
+              </div>
+              <div className="col-span-3 text-xs text-slate-500">
+                <Clock className="inline size-3 mr-1" />
+                {(verification.decision_agent.cost.wall_time_s ?? 0).toFixed(1)}s
+              </div>
+              <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
+                {fmtUSD(verification.decision_agent.cost.cost_usd_total)}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       {/* Rate Card */}
-      <Card className="rounded-xl border-slate-200">
+      <Card className="rounded-2xl border-slate-200">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-3 text-base font-semibold">
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-2">
               <DollarSign className="size-4 text-amber-600" />
             </div>
-            <span>Rate Card (verified May 2026)</span>
+            <span>Rate Card</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -205,7 +204,7 @@ export const CostBreakdown = ({ unified, sttCost, sentiment, audioMinutes }: Cos
 
       {/* Extrapolations */}
       {unified.cost_per_minute_audio_usd != null && (
-        <Card className="rounded-xl border-slate-200">
+        <Card className="rounded-2xl border-slate-200">
           <CardHeader className="pb-3">
             <CardTitle className="text-base font-semibold">At Scale (using this call's per-minute rate)</CardTitle>
           </CardHeader>

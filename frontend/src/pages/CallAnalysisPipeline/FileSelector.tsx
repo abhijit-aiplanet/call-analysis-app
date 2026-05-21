@@ -56,9 +56,11 @@ export const FileSelector = ({ files, selectedIdx, onSelect }: FileSelectorProps
             const isOK = f.status === "ok";
             const isErr = f.status === "error";
             const isPending = !isOK && !isErr;
-            const syn = isOK ? (f.result?.stage_2_sentiment_multi_agent.synthesizer.output as Record<string, unknown> | undefined) : undefined;
-            const tag = syn?.one_line_call_tag as string | undefined;
-            const hm = syn?.headline_metrics as Record<string, unknown> | undefined;
+            // Pull RCU verdict surface for inline preview on each card
+            const v = isOK ? f.result?.rcu_verdict : undefined;
+            const tag = v?.headline_chip || v?.disposition || undefined;
+            const verdict = v?.verdict;
+            const callerType = v?.caller_type;
             const cost = f.result?.unified_cost.total_usd;
             const lang = f.result?.audio_meta.language_code;
             return (
@@ -88,18 +90,24 @@ export const FileSelector = ({ files, selectedIdx, onSelect }: FileSelectorProps
                   <div className="text-[11px] text-slate-600 leading-snug line-clamp-2 mb-1">{tag}</div>
                 )}
                 <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                  {verdict && (
+                    <Badge variant="outline" className={`py-0 font-medium ${
+                      verdict === "Critical" ? "bg-red-50 text-red-700 border-red-200"
+                      : verdict === "Negative" ? "bg-amber-50 text-amber-700 border-amber-200"
+                      : verdict === "Positive" ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                      : "bg-slate-50 text-slate-600 border-slate-200"
+                    }`}>
+                      {verdict}
+                    </Badge>
+                  )}
+                  {callerType && callerType !== "Unknown" && (
+                    <Badge variant="outline" className="bg-white py-0 font-normal text-slate-600">
+                      {callerType}
+                    </Badge>
+                  )}
                   {lang && (
                     <Badge variant="outline" className="bg-white/70 font-mono py-0 font-normal">
                       {lang}
-                    </Badge>
-                  )}
-                  {hm?.risk_level && hm.risk_level !== "none" && (
-                    <Badge variant="outline" className={`py-0 font-normal ${
-                      hm.risk_level === "critical" || hm.risk_level === "high" ? "bg-red-50 text-red-700 border-red-200" :
-                      hm.risk_level === "medium" ? "bg-amber-50 text-amber-700 border-amber-200" :
-                      "bg-slate-50 text-slate-600 border-slate-200"
-                    }`}>
-                      risk: {String(hm.risk_level)}
                     </Badge>
                   )}
                   {cost != null && (

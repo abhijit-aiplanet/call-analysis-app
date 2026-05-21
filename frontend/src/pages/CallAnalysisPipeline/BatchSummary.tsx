@@ -73,12 +73,45 @@ export const BatchSummary = ({ job }: BatchSummaryProps) => {
             tone="purple"
           />
           <CostRow
-            label="Multi-Agent Sentiment"
-            usd={agg.total_sentiment_usd}
-            pct={(agg.total_sentiment_usd / Math.max(agg.total_pipeline_usd, 1e-9)) * 100}
+            label="Multi-Agent Verification"
+            usd={agg.total_verification_usd}
+            pct={(agg.total_verification_usd / Math.max(agg.total_pipeline_usd, 1e-9)) * 100}
             tone="emerald"
           />
         </div>
+
+        {/* Verdict distribution */}
+        {agg.verdict_distribution && Object.keys(agg.verdict_distribution).length > 0 && (
+          <div className="rounded-lg bg-white border border-slate-100 p-3">
+            <div className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-2">
+              Verdict distribution
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(["Critical", "Negative", "Positive"] as const).map((v) => {
+                const count = agg.verdict_distribution[v] || 0;
+                if (count === 0) return null;
+                const tone =
+                  v === "Critical" ? "bg-red-100 text-red-700 border-red-200" :
+                  v === "Negative" ? "bg-amber-100 text-amber-700 border-amber-200" :
+                  "bg-emerald-100 text-emerald-700 border-emerald-200";
+                return (
+                  <div key={v} className={`px-3 py-1.5 rounded-md border ${tone} flex items-center gap-2`}>
+                    <span className="text-sm font-bold">{count}</span>
+                    <span className="text-xs">{v}</span>
+                  </div>
+                );
+              })}
+              {Object.entries(agg.verdict_distribution).map(([v, c]) =>
+                !["Critical", "Negative", "Positive"].includes(v) && (
+                  <div key={v} className="px-3 py-1.5 rounded-md border bg-slate-100 text-slate-700 border-slate-200 flex items-center gap-2">
+                    <span className="text-sm font-bold">{c}</span>
+                    <span className="text-xs">{v}</span>
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Per-call avg */}
         <div className="rounded-lg bg-slate-50 border border-slate-100 px-3 py-2 text-xs text-slate-600 flex items-center justify-between flex-wrap gap-2">

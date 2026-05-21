@@ -23,10 +23,10 @@ const Layout = ({ children, title, description, category }: LayoutProps) => {
             </div>
             <div>
               <div className="text-base font-semibold text-slate-900 leading-tight">
-                Call Analysis Pipeline
+                RCU AI Verification
               </div>
               <div className="text-xs text-slate-500 leading-tight">
-                Scribe v2 + Multi-Agent Sentiment
+                Bajaj Auto Credit · Telephonic Confirmation Automation
               </div>
             </div>
           </div>
@@ -58,7 +58,7 @@ const Layout = ({ children, title, description, category }: LayoutProps) => {
       {/* Footer */}
       <footer className="border-t border-slate-200 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 text-center text-xs text-slate-500">
-          Bajaj Auto Credit · Call Analysis Pipeline
+          Bajaj Auto Credit · Risk Containment Unit · AI Verification
         </div>
       </footer>
     </div>
