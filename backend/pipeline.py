@@ -23,6 +23,11 @@ import requests
 from elevenlabs import ElevenLabs
 from openai import AzureOpenAI
 
+# Structured JSONL audit logger — captures every STT request, LLM call,
+# disposition decision, and post-hoc rule firing for offline analysis.
+# Disable with AUDIT_LOG_DISABLED=1; otherwise on by default.
+import audit_log
+
 from prompts import (
     SPECIALIST_REGISTRY,
     SYS_SYNTHESIZER,
@@ -235,6 +240,16 @@ def transcribe_with_soniox(
         "wall_time_s":       round(wall, 2),
         "provider":          "soniox_stt_async_v4",
     }
+    jid, fn = _audit_ctx_get()
+    audit_log.log_stt_call(
+        job_id=jid, filename=fn, provider="soniox_stt_async_v4",
+        audio_duration_s=duration_s,
+        language_code=dominant_lang,
+        language_probability=lang_prob,
+        num_words=len(tokens),
+        num_speakers=len({tok.get("speaker") for tok in tokens if tok.get("speaker") is not None}),
+        cost_usd_total=cost["cost_usd_total"], wall_time_s=cost["wall_time_s"],
+    )
     return data, cost
 
 
@@ -412,6 +427,22 @@ def _format_transcript_for_prompt(utterances):
     return "\n".join(lines)
 
 
+# Thread-local audit context — set per-file by the orchestrator and read by
+# the agent runners (which need to know which job/file each LLM call belongs
+# to without us threading it through every signature).
+import threading as _threading
+_audit_ctx = _threading.local()
+
+
+def _set_audit_ctx(job_id: Optional[str], filename: Optional[str]) -> None:
+    _audit_ctx.job_id = job_id
+    _audit_ctx.filename = filename
+
+
+def _audit_ctx_get():
+    return getattr(_audit_ctx, "job_id", None), getattr(_audit_ctx, "filename", None)
+
+
 # ─── Agent runners ──────────────────────────────────────────────────────────
 def _run_triage(client, deployment, transcript_for_prompt):
     user = (
@@ -420,6 +451,15 @@ def _run_triage(client, deployment, transcript_for_prompt):
         f"Apply the triage rules in strict order and return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_TRIAGE, user, max_tokens=500)
+    jid, fn = _audit_ctx_get()
+    audit_log.log_llm_call(
+        job_id=jid, filename=fn, agent="triage",
+        system_prompt=SYS_TRIAGE,
+        prompt_tokens=cost["prompt_tokens"], completion_tokens=cost["completion_tokens"],
+        cost_usd_total=cost["cost_usd_total"], wall_time_s=cost["wall_time_s"],
+        parsed_keys=list(result.keys()) if isinstance(result, dict) else [],
+        extra={"short_circuited": not result.get("needs_full_pipeline", True)} if isinstance(result, dict) else None,
+    )
     return result, cost
 
 
@@ -431,6 +471,14 @@ def _run_specialist(client, deployment, name, transcript_for_prompt):
         f"Analyze per your role and return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, spec["system"], user, spec["max_tokens"])
+    jid, fn = _audit_ctx_get()
+    audit_log.log_llm_call(
+        job_id=jid, filename=fn, agent=name,
+        system_prompt=spec["system"],
+        prompt_tokens=cost["prompt_tokens"], completion_tokens=cost["completion_tokens"],
+        cost_usd_total=cost["cost_usd_total"], wall_time_s=cost["wall_time_s"],
+        parsed_keys=list(result.keys()) if isinstance(result, dict) else [],
+    )
     return name, result, cost
 
 
@@ -472,6 +520,14 @@ def _run_synthesizer(client, deployment, transcript_for_prompt, specialist_resul
         f"Apply chain-of-thought, disambiguation, and confidence caps. Return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_SYNTHESIZER, user, max_tokens=2500)
+    jid, fn = _audit_ctx_get()
+    audit_log.log_llm_call(
+        job_id=jid, filename=fn, agent="decision_agent",
+        system_prompt=SYS_SYNTHESIZER,
+        prompt_tokens=cost["prompt_tokens"], completion_tokens=cost["completion_tokens"],
+        cost_usd_total=cost["cost_usd_total"], wall_time_s=cost["wall_time_s"],
+        parsed_keys=list(result.keys()) if isinstance(result, dict) else [],
+    )
     return result, cost
 
 
@@ -487,6 +543,19 @@ def _run_reflection(client, deployment, transcript_for_prompt, specialist_result
         f"Critically review per the checklist. Return ONLY the required JSON."
     )
     result, cost = _call_llm(client, deployment, SYS_REFLECTION, user, max_tokens=1200)
+    jid, fn = _audit_ctx_get()
+    audit_log.log_llm_call(
+        job_id=jid, filename=fn, agent="reflection",
+        system_prompt=SYS_REFLECTION,
+        prompt_tokens=cost["prompt_tokens"], completion_tokens=cost["completion_tokens"],
+        cost_usd_total=cost["cost_usd_total"], wall_time_s=cost["wall_time_s"],
+        parsed_keys=list(result.keys()) if isinstance(result, dict) else [],
+        extra={
+            "agreement": result.get("agreement_with_decision") if isinstance(result, dict) else None,
+            "confidence_delta": result.get("confidence_delta") if isinstance(result, dict) else None,
+            "routing_override": result.get("routing_override") if isinstance(result, dict) else None,
+        },
+    )
     return result, cost
 
 
@@ -926,15 +995,24 @@ def analyze_call_end_to_end(
     llm_client: AzureOpenAI,
     llm_deployment: str,
     keyterms: Optional[List[str]] = None,
+    job_id: Optional[str] = None,
 ):
     """One call → STT (Soniox stt-async-v4 by default) → Multi-agent verification.
     STT provider is selected via the STT_PROVIDER env var. Returns unified record."""
     t_call = time.time()
+    filename = os.path.basename(audio_path)
+    # Set thread-local audit context so every LLM / STT call inside this
+    # pipeline run logs the correct job_id + filename without manual threading.
+    _set_audit_ctx(job_id, filename)
+    audit_log.log("pipeline.start", job_id=job_id, filename=filename, audio_path=audio_path,
+                  keyterms=keyterms or [], stt_provider=_stt_provider())
 
     # Stage 1: STT (routed by STT_PROVIDER env var)
     stt_data, stt_cost = transcribe_stt(audio_path, eleven_client, keyterms=keyterms)
     utterances = group_words_into_utterances(stt_data.get("words") or [])
     if not utterances:
+        audit_log.log("pipeline.error", job_id=job_id, filename=filename,
+                      reason="No utterances detected after STT (silent/empty audio?)")
         raise RuntimeError("No utterances detected after STT (silent/empty audio?)")
 
     speakers = sorted({u["speaker"] for u in utterances if u.get("speaker")})
@@ -954,6 +1032,29 @@ def analyze_call_end_to_end(
     total_cost = stt_cost["cost_usd_total"] + verification["aggregate_cost"]["total_cost_usd"]
     audio_minutes = stt_cost["audio_minutes"]
     cost_per_min = total_cost / max(audio_minutes, 1e-9) if audio_minutes > 0 else None
+
+    # Audit log: final decision + per-pipeline summary
+    reflection_out = (verification.get("reflection") or {}).get("output") or {}
+    audit_log.log_decision(
+        job_id=job_id, filename=filename,
+        verdict=final_output.get("verdict"),
+        disposition=final_output.get("disposition"),
+        disposition_rcu_status=final_output.get("disposition_rcu_status"),
+        caller_type=final_output.get("caller_type"),
+        confidence=final_output.get("verdict_confidence_1_10"),
+        routing=final_output.get("decision_routing"),
+        risk_tags=final_output.get("risk_tags") or [],
+        reflection_applied=bool((verification.get("reflection") or {}).get("applied")),
+        confidence_delta=reflection_out.get("confidence_delta") if isinstance(reflection_out, dict) else None,
+        routing_override=reflection_out.get("routing_override") if isinstance(reflection_out, dict) else None,
+        post_hoc_rules_fired=final_output.get("_post_hoc_rules_fired") or [],
+        extra={
+            "triage_short_circuit": bool(final_output.get("_triage_short_circuit", False)),
+            "audio_duration_s": stt_cost["audio_seconds"],
+            "total_cost_usd": round(total_cost, 8),
+            "total_wall_time_s": round(time.time() - t_call, 2),
+        },
+    )
 
     return {
         "filename": os.path.basename(audio_path),

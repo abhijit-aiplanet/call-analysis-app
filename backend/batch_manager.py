@@ -198,6 +198,7 @@ def _process_one_file(
             llm_client=llm_client,
             llm_deployment=deployment,
             keyterms=keyterms,
+            job_id=job_id,
         )
         # Replace temp filename with the original upload name
         result["filename"] = filename or result.get("filename")
