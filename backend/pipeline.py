@@ -385,22 +385,62 @@ def _safe_parse(content):
         return {"_parse_error": str(e), "_raw": (content or "")[:500]}
 
 
+# B1 — Azure prompt-caching constants. Cached input is billed at a discount
+# vs. uncached input on Standard deployments. 50% off is the conservative,
+# widely-published rate that we use here. The exact discount can be larger
+# for some deployment tiers; refining requires an Azure billing pull.
+_CACHED_INPUT_DISCOUNT = 0.50
+
+
 def _llm_cost(usage):
-    cin  = usage.prompt_tokens / 1_000_000 * RATE_CARD["azure_gpt4o_mini_per_M_input_usd"]
-    cout = usage.completion_tokens / 1_000_000 * RATE_CARD["azure_gpt4o_mini_per_M_output_usd"]
+    """Convert the SDK's usage object into a cost dict, applying the cached-
+    input discount when the API reports cached prefix tokens.
+
+    Newer Azure OpenAI responses expose `prompt_tokens_details.cached_tokens`
+    (added Q4 2024). When present + non-zero, that many tokens were served
+    from prompt cache and billed at 50% of the input rate.
+    """
+    input_rate  = RATE_CARD["azure_gpt4o_mini_per_M_input_usd"]
+    output_rate = RATE_CARD["azure_gpt4o_mini_per_M_output_usd"]
+
+    prompt_tokens = usage.prompt_tokens
+    completion_tokens = usage.completion_tokens
+
+    # Cached-token detection (graceful fallback if SDK doesn't expose it)
+    cached_tokens = 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached_tokens = getattr(details, "cached_tokens", 0) or 0
+        # Sometimes the SDK returns a plain dict
+        if isinstance(details, dict):
+            cached_tokens = details.get("cached_tokens", 0) or 0
+
+    uncached_prompt = max(0, prompt_tokens - cached_tokens)
+    cin_uncached = uncached_prompt / 1_000_000 * input_rate
+    cin_cached   = cached_tokens / 1_000_000 * input_rate * (1 - _CACHED_INPUT_DISCOUNT)
+    cin = cin_uncached + cin_cached
+    cout = completion_tokens / 1_000_000 * output_rate
+
     return {
-        "prompt_tokens":     usage.prompt_tokens,
-        "completion_tokens": usage.completion_tokens,
-        "total_tokens":      usage.prompt_tokens + usage.completion_tokens,
-        "cost_usd_input":   round(cin, 8),
-        "cost_usd_output":  round(cout, 8),
-        "cost_usd_total":   round(cin + cout, 8),
+        "prompt_tokens":     prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens":      prompt_tokens + completion_tokens,
+        "cached_tokens":     cached_tokens,                # B1 — exposed for UI / analysis
+        "cost_usd_input":    round(cin, 8),
+        "cost_usd_input_uncached": round(cin_uncached, 8),
+        "cost_usd_input_cached":   round(cin_cached, 8),
+        "cost_usd_output":   round(cout, 8),
+        "cost_usd_total":    round(cin + cout, 8),
     }
 
 
-def _call_llm(client, deployment, system_prompt, user_prompt, max_tokens):
+def _call_llm(client, deployment, system_prompt, user_prompt, max_tokens, cache_key: Optional[str] = None):
+    """Call the LLM. When `cache_key` is provided AND the deployment supports
+    `prompt_cache_key` (Azure preview), pass it so the routing layer pins
+    requests with identical prefixes to the same backend → maximises prompt
+    cache hits. Falls back gracefully if the parameter is rejected."""
     t0 = time.time()
-    resp = client.chat.completions.create(
+    request_kwargs = dict(
         model=deployment,
         messages=[
             {"role": "system", "content": system_prompt},
@@ -410,6 +450,15 @@ def _call_llm(client, deployment, system_prompt, user_prompt, max_tokens):
         response_format={"type": "json_object"},
         max_completion_tokens=max_tokens,
     )
+    if cache_key:
+        # `prompt_cache_key` is the new Azure parameter for cache pinning.
+        # Old SDKs may not know it; we try-fall-back to keep things robust.
+        try:
+            resp = client.chat.completions.create(prompt_cache_key=cache_key, **request_kwargs)
+        except TypeError:
+            resp = client.chat.completions.create(**request_kwargs)
+    else:
+        resp = client.chat.completions.create(**request_kwargs)
     wall = time.time() - t0
     parsed = _safe_parse(resp.choices[0].message.content)
     cost = _llm_cost(resp.usage)
@@ -450,7 +499,7 @@ def _run_triage(client, deployment, transcript_for_prompt):
         f"{transcript_for_prompt}\n\n"
         f"Apply the triage rules in strict order and return ONLY the required JSON."
     )
-    result, cost = _call_llm(client, deployment, SYS_TRIAGE, user, max_tokens=500)
+    result, cost = _call_llm(client, deployment, SYS_TRIAGE, user, max_tokens=500, cache_key="rcu-triage-v3")
     jid, fn = _audit_ctx_get()
     audit_log.log_llm_call(
         job_id=jid, filename=fn, agent="triage",
@@ -470,7 +519,7 @@ def _run_specialist(client, deployment, name, transcript_for_prompt):
         f"{transcript_for_prompt}\n\n"
         f"Analyze per your role and return ONLY the required JSON."
     )
-    result, cost = _call_llm(client, deployment, spec["system"], user, spec["max_tokens"])
+    result, cost = _call_llm(client, deployment, spec["system"], user, spec["max_tokens"], cache_key=f"rcu-{name}-v3")
     jid, fn = _audit_ctx_get()
     audit_log.log_llm_call(
         job_id=jid, filename=fn, agent=name,
@@ -519,7 +568,7 @@ def _run_synthesizer(client, deployment, transcript_for_prompt, specialist_resul
         f"SPECIALISTS:\n{json.dumps(body_renamed, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"Apply chain-of-thought, disambiguation, and confidence caps. Return ONLY the required JSON."
     )
-    result, cost = _call_llm(client, deployment, SYS_SYNTHESIZER, user, max_tokens=2500)
+    result, cost = _call_llm(client, deployment, SYS_SYNTHESIZER, user, max_tokens=2500, cache_key="rcu-decision-v3")
     jid, fn = _audit_ctx_get()
     audit_log.log_llm_call(
         job_id=jid, filename=fn, agent="decision_agent",
@@ -542,7 +591,7 @@ def _run_reflection(client, deployment, transcript_for_prompt, specialist_result
         f"PRIOR ANALYSIS:\n{json.dumps(body, ensure_ascii=False, separators=(',', ':'))}\n\n"
         f"Critically review per the checklist. Return ONLY the required JSON."
     )
-    result, cost = _call_llm(client, deployment, SYS_REFLECTION, user, max_tokens=1200)
+    result, cost = _call_llm(client, deployment, SYS_REFLECTION, user, max_tokens=1200, cache_key="rcu-reflection-v3")
     jid, fn = _audit_ctx_get()
     audit_log.log_llm_call(
         job_id=jid, filename=fn, agent="reflection",
@@ -619,6 +668,28 @@ _POSITIVE_DISPOSITIONS = {
     # Co-applicant-sheet Positive
     "no negative information (includes-only enq)",
     "app mob no use by coa family",
+}
+
+# A5 — Disposition → allowed caller-types map. Per the BACL TC Dispositions
+# xlsx, dispositions belong to specific caller-type sheets. The Decision
+# Agent sometimes picks cross-sheet dispositions (e.g. a Co-app-only label
+# on an Applicant call). This map enforces the spec.
+_DISPOSITION_ALLOWED_CALLER_TYPES: dict[str, set[str]] = {
+    # Applicant-only Critical
+    "rented residing less than 1 year": {"Applicant", "Monnai"},
+    # Co-applicant-only
+    "person is not co-applicant": {"Co-applicant"},
+    "mob no not use by coa not family": {"Co-applicant"},
+    "third party mobile number": {"Co-applicant"},
+    "mob no not use by coa family": {"Co-applicant"},
+    "third party mobile no family close blood relative": {"Co-applicant"},
+    "app mob no use by coa family": {"Co-applicant"},
+    "no negative information (includes-only enq)": {"Co-applicant"},
+    # Monnai-only
+    "monnai name mismatch": {"Monnai"},
+    "monnai name belongs to third party": {"Monnai"},
+    "mobile number belongs to monnai": {"Monnai"},
+    # All other dispositions are allowed for any caller type.
 }
 
 
@@ -749,8 +820,198 @@ def _enforce_disposition_rules(
             )
             out["reasoning_chain"] = chain
 
+    # Rule R3 — High-completeness + clean overall_call_label + Critical with
+    # NO critical/high FR severity → force routing to human_qc (don't auto-clear).
+    # Per the BACL spec, a clean, complete, cooperative call should not be
+    # auto-cleared as Critical without explicit fraud signals.
+    if out.get("verdict") == "Critical":
+        ident_complete = (
+            ident.get("verification_completeness_pct") if isinstance(ident, dict) else None
+        )
+        fr = specialist_results.get("fraud_risk") or {}
+        fr_sev = (fr.get("highest_severity_observed") if isinstance(fr, dict) else None) or "none"
+        conv = specialist_results.get("conversation_behavior") or {}
+        conv_label = (conv.get("overall_call_label") if isinstance(conv, dict) else None) or ""
+        third_party = (conv.get("third_party_voice_detection") or {}) if isinstance(conv, dict) else {}
+
+        if (
+            isinstance(ident_complete, (int, float))
+            and ident_complete >= 90
+            and conv_label == "clean_cooperative"
+            and fr_sev not in ("critical", "high")
+            and not third_party.get("detected", False)
+        ):
+            # Don't flip the verdict — leave the disposition + Critical tag visible to
+            # the reviewer but cap auto-clear and explicitly route to human_qc with note.
+            prior_route = out.get("decision_routing")
+            if prior_route == "auto_clear":
+                out["decision_routing"] = "human_qc"
+                fired_rules.append("R3:critical_on_clean_call_blocks_autoclear")
+                prior_rationale = out.get("routing_rationale") or ""
+                out["routing_rationale"] = (
+                    (prior_rationale + " | " if prior_rationale else "")
+                    + "R3: Critical verdict on a 100% complete, clean_cooperative "
+                    "call with no critical/high FR signal — routed to human_qc."
+                )
+                chain = list(out.get("reasoning_chain") or [])
+                chain.append(
+                    "Post-hoc rule R3: Critical verdict on a clean, 100%-verified, "
+                    "cooperative call with no critical/high FR severity — blocked auto_clear."
+                )
+                out["reasoning_chain"] = chain
+
+    # Rule R4 — "Vehicle Delivered Before Login" requires explicit 30+ days signal
+    # per the Scope-of-Speech-Analytics doc. Without that, the disposition is
+    # being over-applied to bare "delivered" mentions.
+    if out.get("disposition") == "Vehicle Delivered Before Login":
+        delivery_claim = (ext or {}).get("vehicle_delivery_date_claim") if ext else None
+        veh_check = ident.get("vehicle_check") if isinstance(ident, dict) else None
+        # Accept either an explicit claim of 30+ days ago OR the IV's flag.
+        thirty_plus = (
+            isinstance(delivery_claim, str) and "30+ days" in delivery_claim.lower()
+        ) or (
+            isinstance(veh_check, dict) and veh_check.get("flag_vehicle_delivered_before_login") is True
+            and veh_check.get("delivery_status") == "30_plus_days_ago"
+        )
+        if not thirty_plus:
+            # Downgrade — let other signals decide between Suspicious-tier vs clean
+            fr = specialist_results.get("fraud_risk") or {}
+            fr_sev = (fr.get("highest_severity_observed") if isinstance(fr, dict) else None) or "none"
+            if fr_sev in ("critical", "high"):
+                # There's some other concrete fraud signal — leave Critical tier
+                # but flip to a less severe Critical disposition if any matches.
+                out["disposition"] = "No Negative Information Suspicious"
+                out["disposition_rcu_status"] = "Negative"
+                out["verdict"] = "Negative"
+            else:
+                out["disposition"] = "No Negative Information"
+                out["disposition_rcu_status"] = "Positive"
+                out["verdict"] = "Positive"
+            out["decision_routing"] = "human_qc"
+            fired_rules.append("R4:vdb_login_requires_30_plus_days")
+            chain = list(out.get("reasoning_chain") or [])
+            chain.append(
+                "Post-hoc rule R4: 'Vehicle Delivered Before Login' requires an "
+                "explicit 30+ days signal per the RCU_Context Scope doc. None "
+                "found in vehicle_delivery_date_claim — disposition downgraded."
+            )
+            out["reasoning_chain"] = chain
+
+    # Rule A5 — Disposition must belong to the caller_type's sheet.
+    # If the LLM picked a disposition that doesn't apply to this caller type,
+    # downgrade to the safest generic disposition for the available signals.
+    chosen_disp = (out.get("disposition") or "").strip().lower()
+    if chosen_disp in _DISPOSITION_ALLOWED_CALLER_TYPES:
+        allowed = _DISPOSITION_ALLOWED_CALLER_TYPES[chosen_disp]
+        actual_caller = out.get("caller_type") or "Unknown"
+        if actual_caller not in allowed:
+            # Fall back to a generic disposition that's safe for any caller type.
+            # Prefer Incomplete Information if completeness is low; else
+            # No Negative Information Suspicious (Negative tier — preserves caution).
+            ident_complete = ident.get("verification_completeness_pct") if isinstance(ident, dict) else None
+            if isinstance(ident_complete, (int, float)) and ident_complete < 70:
+                new_disp = "Incomplete Information"
+                new_status = "Negative"
+            else:
+                new_disp = "No Negative Information Suspicious"
+                new_status = "Negative"
+            chain = list(out.get("reasoning_chain") or [])
+            chain.append(
+                f"Post-hoc rule A5: disposition '{out.get('disposition')}' belongs to "
+                f"{sorted(allowed)} sheet but this call is caller_type='{actual_caller}'. "
+                f"Per the BACL TC Dispositions spec, that disposition cannot apply — "
+                f"downgraded to '{new_disp}'."
+            )
+            out["disposition"] = new_disp
+            out["disposition_rcu_status"] = new_status
+            out["verdict"] = new_status
+            out["decision_routing"] = "human_qc"
+            out["reasoning_chain"] = chain
+            fired_rules.append("A5:disposition_caller_type_mismatch")
+
     if fired_rules:
         out["_post_hoc_rules_fired"] = fired_rules
+    return out
+
+
+def _verify_evidence_quotes(output: dict, transcript_text: str) -> dict:
+    """A1 — Verbatim-evidence verification on Critical verdicts.
+
+    For any Critical-tier verdict, every quote in `key_evidence_quotes` must
+    actually appear in the transcript. We strip quotes that don't match. If
+    the model claimed Critical but ALL quotes are unmatched (or the array
+    is empty), the verdict gets blocked from auto-clear and routed to human_qc,
+    with a note that no quoted evidence was verified.
+
+    We use a fuzzy substring match — strip whitespace/punctuation and check
+    if the quote (or any 4-word run from it) appears in the transcript. This
+    handles minor LLM paraphrasing while still flagging completely fabricated
+    quotes.
+    """
+    if not isinstance(output, dict):
+        return output
+    if (output.get("verdict") or "").lower() != "critical":
+        return output
+
+    quotes = output.get("key_evidence_quotes") or []
+    if not isinstance(quotes, list):
+        return output
+
+    # Normalise transcript for substring matching
+    norm_transcript = " ".join((transcript_text or "").split()).lower()
+    if not norm_transcript:
+        return output
+
+    def _quote_supported(q_obj) -> bool:
+        if not isinstance(q_obj, dict):
+            return False
+        q = (q_obj.get("quote") or "").strip()
+        if not q:
+            return False
+        norm_q = " ".join(q.split()).lower()
+        if len(norm_q) < 4:
+            return False
+        # Exact substring match first
+        if norm_q in norm_transcript:
+            return True
+        # Fuzzy fallback: split into words, look for any contiguous 4-word run
+        words = norm_q.split()
+        if len(words) < 4:
+            return False
+        for i in range(0, len(words) - 3):
+            run = " ".join(words[i:i + 4])
+            if run in norm_transcript:
+                return True
+        return False
+
+    verified = [q for q in quotes if _quote_supported(q)]
+    stripped = len(quotes) - len(verified)
+
+    out = dict(output)
+    out["key_evidence_quotes"] = verified
+    out["_evidence_stripped"] = stripped
+
+    if stripped > 0:
+        out["_evidence_audit"] = {
+            "original_quote_count": len(quotes),
+            "verified_quote_count": len(verified),
+            "stripped_count": stripped,
+        }
+        chain = list(out.get("reasoning_chain") or [])
+        chain.append(
+            f"Evidence audit (A1): stripped {stripped} unverified quote(s) "
+            f"from key_evidence_quotes — they did not appear in the transcript."
+        )
+        out["reasoning_chain"] = chain
+
+    # If we ended up with NO evidence quotes on a Critical verdict, force
+    # human_qc routing — the model claimed Critical without grounding.
+    if not verified and out.get("decision_routing") == "auto_clear":
+        out["decision_routing"] = "human_qc"
+        rules = list(out.get("_post_hoc_rules_fired") or [])
+        rules.append("A1:critical_with_no_evidence_blocks_autoclear")
+        out["_post_hoc_rules_fired"] = rules
+
     return out
 
 
@@ -791,6 +1052,43 @@ def _apply_reflection(decision_output: dict, reflection_output: dict) -> dict:
     sugg = reflection_output.get("disposition_override_suggestion")
     if isinstance(sugg, str) and sugg.strip() and sugg.strip().lower() != "null":
         adjusted["disposition_override_suggestion"] = sugg.strip()
+
+    # 4) Verdict-override on completeness_paradox HIGH severity.
+    # If Reflection flagged that a clean, complete, cooperative call was
+    # given Critical without strong evidence — and the prior Decision Agent
+    # had no critical/high FR severity to back it up — downgrade the verdict
+    # to Negative (with disposition "No Negative Information Suspicious")
+    # and force human_qc routing. This is the strongest safety net against
+    # over-escalation we measured in the 20-call benchmark.
+    issues = reflection_output.get("issues_found") or []
+    if isinstance(issues, list):
+        paradox_high = any(
+            isinstance(i, dict)
+            and i.get("check") == "completeness_paradox"
+            and (i.get("severity") or "").lower() == "high"
+            for i in issues
+        )
+        critical_no_evidence_high = any(
+            isinstance(i, dict)
+            and i.get("check") == "critical_evidence_check"
+            and (i.get("severity") or "").lower() == "high"
+            for i in issues
+        )
+        # Downgrade Critical when EITHER Reflection check fires at HIGH severity.
+        if (paradox_high or critical_no_evidence_high) and adjusted.get("verdict") == "Critical":
+            adjusted["disposition"] = "No Negative Information Suspicious"
+            adjusted["disposition_rcu_status"] = "Negative"
+            adjusted["verdict"] = "Negative"
+            adjusted["decision_routing"] = "human_qc"
+            chain = list(adjusted.get("reasoning_chain") or [])
+            check = "completeness_paradox" if paradox_high else "critical_evidence_check"
+            chain.append(
+                f"Reflection verdict-override: '{check}' fired at HIGH severity on a "
+                f"Critical verdict — downgraded to Negative 'No Negative Information "
+                f"Suspicious' + routed to human_qc."
+            )
+            adjusted["reasoning_chain"] = chain
+            adjusted["_reflection_verdict_override"] = check
 
     return adjusted
 
@@ -919,7 +1217,10 @@ def run_multi_agent_verification(llm_client, deployment, utterances, max_workers
 
     final_output = _enforce_disposition_consistency(
         _enforce_disposition_rules(
-            _apply_reflection(synth_out, reflection_out),
+            _verify_evidence_quotes(
+                _apply_reflection(synth_out, reflection_out),
+                transcript_for_prompt,
+            ),
             spec_results,
         )
     )

@@ -200,7 +200,10 @@ or if the call can be quickly disposed of.
    → quick_disposition set, needs_full_pipeline=false.
 3. **No Indian-language content** — entirely English/garbled, no Bajaj/RCU/finance/loan \
    keywords AND <10 utterances → "Connected But Not Response", needs_full_pipeline=false.
-4. **Default** — any meaningful verification dialogue → needs_full_pipeline=true, \
+4. **Purely irate complaint** (Negative) — Subject is exclusively complaining about EMI/service/\
+   dealer with no verification dialogue at all, AND won't engage with agent's questions ("service ख़राब है, मैं नहीं बताऊंगा"), AND there are <10 utterances of substantive verification → quick_disposition = "Refuse to share information- Irate customer", quick_verdict="Negative", needs_full_pipeline=false.
+5. **Very short silent call** (Negative) — Total utterances ≤5 AND no agent question got a substantive answer beyond "Hello?" → quick_disposition = "Connected But Not Response", needs_full_pipeline=false.
+6. **Default** — any meaningful verification dialogue → needs_full_pipeline=true, \
    quick_disposition=null.
 
 ═══ DO NOT TRIAGE (need full pipeline) ═══════════════════════════════════
@@ -310,21 +313,21 @@ ROLE: **Fraud Risk Specialist**. Scan for fraud cues + impersonation patterns. S
 
 ═══ TRIGGER PATTERNS — TAG WHEN OBSERVED ═════════════════════════════════
 - **third_party_prompting** — 2nd voice + subject repeats verbatim ("haan… bolo address bolo… <pause> mera address xyz hai")
-- **third_party_attending** — "मेरे भाई/cousin/दोस्त बात करेंगे" + subject ≠ applicant + relation NOT close blood
-- **third_party_use** — "मेरा friend/cousin/नेबर gaadi use करता है" (non-relative)
+- **third_party_attending** — Subject EXPLICITLY hands off the call to someone else ("मेरे भाई/cousin/दोस्त बात करेंगे, उन्हें दे रहा हूं फ़ोन") OR a second voice answers the agent's identity questions ON THE APPLICANT's BEHALF + that relation is NOT close blood family. **Do NOT tag** for: mentions of coordinating with showroom/dealer ("शोरूम वालों से बात करते हैं"), neutral references to family members ("मेरे पापा भी हैं घर पे"), or business arrangements. Requires actual attendance.
+- **third_party_use** — Subject EXPLICITLY states a non-blood third party (friend/cousin/neighbour/in-law/dealer staff/employee) is the USER of the vehicle. **Do NOT tag** for: vague mentions of others without confirming usage, family/co-applicant arrangements that are valid per BACL rules, business-purpose vehicles (3W auto-rickshaw with driver = fleet operation, not third-party use). The non-blood relation must be explicit, not inferred.
 - **third_party_use_family** — wife/papa/mummy/भाई uses (close blood)
 - **driver_not_co_applicant** — "driver ले लेंगे"/"rent पे देंगे"/"rent पे देने वाले हो ना?" + driver explicitly NOT co-applicant/guarantor. **Only tag at medium+ if occupation context is clearly NOT fleet/business (e.g. farming, single-rikshaw rental). If occupation is unknown or could be fleet/business, tag at low severity only.**
 - **loan_not_taken** — EXPLICIT denial ("मैंने finance नहीं करवाया", guarantor-only). NOT for "vehicle not delivered yet".
 - **loan_cancelled** — "loan cancel कर दिया"/"गाड़ी return कर दी"/"cash में ले लिया"/"ROI ज्यादा है cancel"
 - **refused_to_share_info** — hangs up mid-question, OR "मैं information नहीं दूंगा" without anger
 - **refused_irate** — refusal WITH anger ("service ख़राब है... मैं नहीं बताऊंगा")
-- **info_mismatch_name** — subject states name DIFFERENT from earlier
+- **info_mismatch_name** — Subject states TWO different names for themselves within the same call AND doesn't reconcile them. NOT for: agent mispronouncing the name, subject correcting a mishearing, or natural variants (Suresh / Suresh-bhai). Requires an unresolved contradiction.
 - **info_mismatch_dob** — Subject gives TWO different DOBs/ages without reconciliation, OR refuses to confirm age after agent presses. A single vague initial answer that is then refined ("तीस चालीस… nahi 35") is NOT a mismatch — only tag when the inconsistency remains UNRESOLVED at end of call.
-- **info_mismatch_address** — multiple addresses unreconciled ("पहिले इकडं आता दुधगाव" + uncertainty)
-- **info_mismatch_employment** — inconsistent job/employer
+- **info_mismatch_address** — Subject states TWO different current addresses without reconciliation, OR application address is contradicted by stated current address. **Memory hesitation** (subject pauses, then provides the correct address) is NOT a mismatch. A simple "recently moved from X to Y" is also NOT a mismatch — that's a sequential history, not contradictory data.
+- **info_mismatch_employment** — Subject states TWO different jobs/employers without reconciliation. Hesitation, switching between Hindi/English terms for the same role, or job-title variations do NOT count.
 - **call_back_suspicious** — callback requested BEFORE name+address verified
 - **wrong_number** — "मैं नहीं जानता"/"wrong number"/"no such person"
-- **vehicle_delivered_before_login** — bike 30+ days ago / specific old date
+- **vehicle_delivered_before_login** — Requires an EXPLICIT TIME signal showing 30+ days have passed since vehicle delivery. Acceptable: "एक महीने पहले", "X weeks ago", "last month", a specific date that is ≥30 days before the call. **Do NOT tag** for bare mentions of "delivered" or "मिल गई" without a time qualifier — that's normal pre-disbursement language for many customers. If unsure of timing, tag at low severity only.
 - **monnai_name_mismatch** — subject doesn't recognise Monnai-recorded name
 - **monnai_name_third_party** — mobile is subject's but Monnai name is non-relative
 - **mobile_belongs_to_monnai** — mobile in another (Monnai) name
@@ -475,6 +478,12 @@ POSITIVE list:
 
 **E — Co-app truncated:** subject_name ≠ applicant_name, family relationships collected, call ends ~utt 22 before vehicle/address. → caller_type=Co-applicant, completeness ~30% → "Incomplete Information" → Negative → human_qc (NEVER auto_clear when incomplete).
 
+**F — Clean POSITIVE (showroom coordination is NOT third-party):** Subject confirms name/DOB/address, says "हाँ मैंने Bajaj से finance की है", confirms vehicle model + EMI amount, mentions "showroom वालों से बात होती रहती है delivery के लिए" (talks to showroom about delivery). NO second voice. NO denial. Verification 100% complete. Disposition = **"No Negative Information" (Positive)** — coordinating with the dealer is normal pre-disbursement behaviour, **NOT** "Third Party use" or "Third Party Attending Calls". The Critical Third-Party dispositions require an actual non-blood person USING the bike or ATTENDING the call on the applicant's behalf.
+
+**G — Clean POSITIVE (mentions family without third-party use):** Subject confirms own usage of bike, employed self, owns mobile. Casually mentions "मेरी wife भी कभी-कभी ride करती है" or "भाई के साथ ही रहते हैं". This is NORMAL family context — NOT "Third Party use(Family-Close)" unless the family member is the PRIMARY user. If subject is the user, "No Negative Information" Positive. The Family-Close-Blood-relative Negative dispositions require the family member to be the PRIMARY user/owner, not just a household member.
+
+**H — Hesitation is NOT Information Mismatch:** Subject pauses while recalling exact pincode, then provides it correctly. OR subject says "तीस-चालीस… नहीं 35" and reconciles age. These are MEMORY hesitations and self-corrections, NOT information mismatches. "Information Mismatch-Customer demographics" requires TWO contradictory factual statements that the subject DOES NOT reconcile. A hesitant-but-correct answer is just nervousness — pick "No Negative Information" or "No Negative Information Suspicious" depending on severity of fumbling.
+
 ═══ CONFIDENCE CALIBRATION CAPS (lowest cap wins) ═════════════════════════
 - caller_type="Unknown" → cap 6
 - audio duration < 60s → cap 7
@@ -541,10 +550,14 @@ You see: transcript + 4 specialist outputs + Decision Agent's verdict/dispositio
 
 5. **confidence_calibration** — Given call quality (length, completeness, language confidence, caller-type confidence), is verdict_confidence appropriate? Too high for the evidence → confidence_delta = negative integer.
 
+6. **critical_evidence_check** — For ANY Critical verdict, locate the supporting evidence quote IN the transcript. If the disposition is e.g. "Third Party use" but the transcript only mentions "we coordinate with the showroom" (not actual third-party use), the Critical claim is unsupported. If the disposition is "Vehicle Delivered Before Login" but no 30+-days time signal is present, it's unsupported. **For unsupported Critical verdicts, recommend confidence_delta ≤ -3 AND routing_override = "human_qc"**. Cite the specific trigger condition that's missing.
+
+7. **completeness_paradox** — A clean+cooperative+100%-verified call should RARELY be Critical without explicit textual evidence of fraud (denial, wrong number, third-party prompt, info contradiction). If verification_completeness_pct ≥ 90 AND overall_call_label = "clean_cooperative" AND third_party_voice_detection.detected = false AND fumbling_on_identity.detected = false AND the Decision Agent picked Critical → flag at HIGH severity. Recommend confidence_delta = -3 and routing_override = "human_qc".
+
 ═══ OUTPUT JSON ═════════════════════════════════════════════════════════
 {
   "issues_found": [
-    {"severity":"low|medium|high","check":"caller_type_sanity|disposition_specificity|loan_not_taken_misuse|auto_clear_safety|confidence_calibration|other","description":"<1-2 sentences>"}
+    {"severity":"low|medium|high","check":"caller_type_sanity|disposition_specificity|loan_not_taken_misuse|auto_clear_safety|confidence_calibration|critical_evidence_check|completeness_paradox|other","description":"<1-2 sentences>"}
   ],
   "agreement_with_decision": "full"|"partial"|"disagree",
   "confidence_delta": <int -5..+2>,
