@@ -75,5 +75,3 @@ export const getHealth = async () => {
   const response = await axios.get(`${API_BASE_URL}/health`);
   return response.data;
 };
-
-export { API_BASE_URL };
