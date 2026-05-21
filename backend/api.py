@@ -41,20 +41,30 @@ for env_path in (os.path.join(_HERE, ".env"), os.path.join(_HERE, ".env.local"))
 
 
 # ─── Credentials ────────────────────────────────────────────────────────────
+STT_PROVIDER  = os.getenv("STT_PROVIDER", "soniox").lower()
+SONIOX_KEY    = os.getenv("SONIOX_API_KEY")
 ELEVEN_KEY    = os.getenv("ELEVENLABS_API_KEY")
 AZURE_KEY     = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_ENDPT   = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
 AZURE_DEPLOY  = os.getenv("AZURE_DEPLOYMENT", "gpt-4o-mini")
 
-if not (ELEVEN_KEY and AZURE_KEY and AZURE_ENDPT):
+# STT credential check depends on the active provider
+_stt_ok = (
+    (STT_PROVIDER == "soniox" and bool(SONIOX_KEY))
+    or (STT_PROVIDER == "elevenlabs" and bool(ELEVEN_KEY))
+)
+
+if not (_stt_ok and AZURE_KEY and AZURE_ENDPT):
     print(
-        "WARNING: Missing one or more credentials. Set ELEVENLABS_API_KEY, "
-        "AZURE_OPENAI_API_KEY, and AZURE_OPENAI_ENDPOINT in the environment "
-        "before requests will succeed.",
+        f"WARNING: Missing one or more credentials. STT_PROVIDER={STT_PROVIDER} "
+        f"requires {'SONIOX_API_KEY' if STT_PROVIDER=='soniox' else 'ELEVENLABS_API_KEY'}; "
+        "also need AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT.",
         file=sys.stderr,
     )
 
+# We always instantiate the ElevenLabs client if its key exists, so the pipeline
+# can fall back to it on demand (STT_PROVIDER=elevenlabs).
 eleven_client = ElevenLabs(api_key=ELEVEN_KEY) if ELEVEN_KEY else None
 llm_client    = AzureOpenAI(
     api_key=AZURE_KEY,
@@ -67,10 +77,11 @@ llm_client    = AzureOpenAI(
 app = FastAPI(
     title="Call Analysis Pipeline API",
     description=(
-        "Production API for the Call Analysis Pipeline. "
-        "ElevenLabs Scribe v2 STT (code-mixed Indian-language output, with diarization) → "
-        "Multi-agent sentiment analysis (5 specialists + 1 synthesizer) on gpt-4o-mini. "
-        "Returns granular per-stage and per-token cost tracking with every response."
+        "Production API for the BACL RCU Call Analysis Pipeline. "
+        "Soniox stt-async-v4 STT (code-mixed Indian-language output, diarization, "
+        "per-token language ID; ElevenLabs Scribe v2 retained as fallback) → "
+        "Multi-agent RCU verification (Triage + 4 specialists + Decision + Reflection) "
+        "on Azure OpenAI gpt-4o-mini. Returns granular per-stage and per-token cost tracking."
     ),
     version="1.0.0",
 )
@@ -119,14 +130,21 @@ async def root():
 
 @app.get("/health")
 async def health():
+    active_stt_vendor = (
+        "Soniox stt-async-v4"
+        if STT_PROVIDER == "soniox"
+        else "ElevenLabs Scribe v2"
+    )
     return {
         "status": "ok",
         "service": "call-analysis-pipeline",
         "vendors": {
-            "stt": "ElevenLabs Scribe v2",
+            "stt": active_stt_vendor,
+            "stt_provider_env": STT_PROVIDER,
             "llm": "Azure OpenAI gpt-4o-mini",
         },
         "credentials_loaded": {
+            "soniox":     bool(SONIOX_KEY),
             "elevenlabs": eleven_client is not None,
             "azure_openai": llm_client is not None,
         },
@@ -144,12 +162,11 @@ async def pricing():
     return {
         "rate_card": RATE_CARD,
         "notes": [
-            "ElevenLabs Scribe v2 base: $0.22/hr of audio (async/batch).",
-            "Keyterms surcharge: +$0.05/hr when 'keyterms' parameter is used.",
-            "Entity-detection surcharge: +$0.07/hr (not enabled by default in this pipeline).",
-            "Detect-speaker-roles surcharge: +10% of base (not enabled by default).",
+            f"Active STT provider: {STT_PROVIDER}",
+            "Soniox stt-async-v4: $0.10/hr of audio (default).",
+            "ElevenLabs Scribe v2 base: $0.22/hr + $0.05/hr keyterms surcharge (fallback).",
             "Azure gpt-4o-mini: $0.20/M input tokens, $0.60/M output tokens (Standard tier).",
-            "No LLM translation step — Scribe v2's code-mixed output is consumed by the multi-agent system directly.",
+            "No LLM translation step — code-mixed transcripts consumed by the multi-agent system directly.",
         ],
     }
 

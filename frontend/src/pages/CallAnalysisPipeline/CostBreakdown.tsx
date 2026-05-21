@@ -10,6 +10,7 @@ interface CostBreakdownProps {
   sttCost: STTCost;
   verification: VerificationAggregate;
   audioMinutes: number;
+  sttVendor?: string; // e.g. "Soniox stt-async-v4" or "ElevenLabs Scribe v2"
 }
 
 const SPECIALIST_LABELS: Record<string, string> = {
@@ -19,9 +20,11 @@ const SPECIALIST_LABELS: Record<string, string> = {
   conversation_behavior:  "Conversation Behavior",
 };
 
-export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: CostBreakdownProps) => {
+export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes, sttVendor }: CostBreakdownProps) => {
   const sttPct = unified.stage_cost_share_pct.stt;
   const verPct = unified.stage_cost_share_pct.verification;
+  const vendor = sttVendor || "Soniox stt-async-v4";
+  const isSoniox = vendor.toLowerCase().includes("soniox");
 
   return (
     <div className="space-y-4">
@@ -79,7 +82,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-2">
                 <Mic className="size-4 text-purple-600" />
-                <span className="text-sm font-medium text-slate-700">STT (ElevenLabs Scribe v2)</span>
+                <span className="text-sm font-medium text-slate-700">STT ({vendor})</span>
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-slate-900">{inr(unified.stt_usd)}</span>
@@ -215,14 +218,25 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-            <div className="flex justify-between p-2 rounded bg-slate-50">
-              <span className="text-slate-600">Scribe v2 base</span>
-              <span className="font-mono font-semibold">{inr(unified.rate_card.elevenlabs_scribe_v2_base_per_hour)}/hr</span>
-            </div>
-            <div className="flex justify-between p-2 rounded bg-slate-50">
-              <span className="text-slate-600">Keyterms surcharge</span>
-              <span className="font-mono font-semibold">+{inr(unified.rate_card.elevenlabs_keyterms_surcharge_per_hour)}/hr</span>
-            </div>
+            {isSoniox ? (
+              <div className="flex justify-between p-2 rounded bg-slate-50">
+                <span className="text-slate-600">Soniox stt-async-v4</span>
+                <span className="font-mono font-semibold">
+                  {inr(unified.rate_card.soniox_stt_async_v4_per_hour ?? 0.10)}/hr
+                </span>
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-between p-2 rounded bg-slate-50">
+                  <span className="text-slate-600">Scribe v2 base</span>
+                  <span className="font-mono font-semibold">{inr(unified.rate_card.elevenlabs_scribe_v2_base_per_hour)}/hr</span>
+                </div>
+                <div className="flex justify-between p-2 rounded bg-slate-50">
+                  <span className="text-slate-600">Keyterms surcharge</span>
+                  <span className="font-mono font-semibold">+{inr(unified.rate_card.elevenlabs_keyterms_surcharge_per_hour)}/hr</span>
+                </div>
+              </>
+            )}
             <div className="flex justify-between p-2 rounded bg-slate-50">
               <span className="text-slate-600">gpt-4o-mini input</span>
               <span className="font-mono font-semibold">{inr(unified.rate_card.azure_gpt4o_mini_per_M_input_usd)}/M tokens</span>

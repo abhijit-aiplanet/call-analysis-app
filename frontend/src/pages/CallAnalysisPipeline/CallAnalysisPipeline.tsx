@@ -108,7 +108,7 @@ const CallAnalysisPipeline = () => {
   return (
     <Layout
       title="RCU AI Verification"
-      description="Bajaj Auto Credit · Risk Containment Unit · automated Telephonic Confirmation. ElevenLabs Scribe v2 STT + 4-specialist verification + Decision Agent. Outputs verdict (Positive / Negative / Critical), disposition, confidence, and routing — all in under 5 minutes per call."
+      description="Bajaj Auto Credit · Risk Containment Unit · automated Telephonic Confirmation. Soniox stt-async-v4 STT + Triage + 4 specialists + Decision Agent + Reflection. Outputs verdict (Positive / Negative / Critical), disposition, confidence, and routing — all in under 5 minutes per call."
       category="Risk Containment Unit"
     >
       <div className="space-y-6 font-inter">
@@ -300,6 +300,7 @@ const PerFileDetail = ({ result, audioUrl, activeTab, setActiveTab }: PerFileDet
           sttCost={result.stage_1_stt.cost}
           verification={result.stage_2_verification}
           audioMinutes={result.audio_meta.audio_minutes}
+          sttVendor={result.stage_1_stt.vendor}
         />
       )}
     </div>

@@ -1,8 +1,10 @@
-"""RCU AI Verification pipeline: ElevenLabs Scribe v2 → Multi-agent verification.
+"""RCU AI Verification pipeline: Soniox stt-async-v4 → Multi-agent verification.
+
+(ElevenLabs Scribe v2 retained as a fallback — toggle with STT_PROVIDER env var.)
 
 No LLM translation step — agents read code-mixed transcripts directly.
 Pipeline stages:
-  Stage 1: STT + Diarization (ElevenLabs Scribe v2)
+  Stage 1: STT + Diarization (Soniox stt-async-v4 default; ElevenLabs fallback)
   Stage 2: Multi-Agent Verification
     2a. Triage Agent (pre-flight — cheap, can short-circuit dead-simple calls)
     2b. 4 specialists in parallel: Information Extraction (auto-detects caller
@@ -17,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
+import requests
 from elevenlabs import ElevenLabs
 from openai import AzureOpenAI
 
@@ -29,6 +32,7 @@ from prompts import (
 
 # ─── Pricing (verified May 2026, USD per unit) ─────────────────────────────
 RATE_CARD = {
+    "soniox_stt_async_v4_per_hour":               0.10,   # Soniox $0.10/hr async
     "elevenlabs_scribe_v2_base_per_hour":         0.22,
     "elevenlabs_keyterms_surcharge_per_hour":     0.05,
     "elevenlabs_entity_detection_surcharge_per_hour": 0.07,
@@ -38,7 +42,221 @@ RATE_CARD = {
 }
 
 
-# ─── ElevenLabs Scribe v2 STT ───────────────────────────────────────────────
+# ─── Soniox configuration ──────────────────────────────────────────────────
+SONIOX_BASE = "https://api.soniox.com"
+# These read from env at call time (not import time) so they pick up dotenv
+# even if api.py loads .env after importing pipeline.
+def _soniox_api_key() -> str:
+    return os.environ.get("SONIOX_API_KEY", "")
+def _stt_provider() -> str:
+    return os.environ.get("STT_PROVIDER", "soniox").lower()
+# Module-level aliases (for backward compat with code that reads them once)
+SONIOX_API_KEY = _soniox_api_key()
+STT_PROVIDER   = _stt_provider()
+
+# Indian-language hints — passed to stt-async-v4 to significantly improve
+# accuracy on BACL RCU calls (per Soniox docs). Hints cover all 6 major
+# Indian languages we see in the test set + English code-mixing.
+SONIOX_LANGUAGE_HINTS = ["hi", "mr", "te", "ta", "ml", "kn", "gu", "bn", "en"]
+
+# Domain context (up to 8K tokens, free). Lifted from RCU_Context vocabulary +
+# the model's DOMAIN_CORE. Helps Soniox correctly transcribe Bajaj-specific
+# terms (model names, vehicle types, RCU jargon) instead of guessing.
+SONIOX_CONTEXT_RCU: Dict[str, Any] = {
+    "general": [
+        {"key": "domain",       "value": "Loan application verification call"},
+        {"key": "organization", "value": "Bajaj Auto Credit Limited (BACL)"},
+        {"key": "department",   "value": "Risk Containment Unit (RCU)"},
+        {"key": "country",      "value": "India"},
+        {"key": "purpose",      "value": "Telephonic Confirmation (TC) before disbursement"},
+    ],
+    "text": (
+        "This is a pre-disbursement verification call from BACL's RCU team. "
+        "The agent verifies the applicant's identity, address, mobile-number "
+        "ownership, vehicle details, and loan purpose. Speakers code-mix "
+        "between Hindi/Marathi/Telugu/Tamil/Malayalam/Kannada/Gujarati/Bengali "
+        "and English. Domain terms (Bajaj, EMI, OTP, finance, sanction letter, "
+        "co-applicant, guarantor) often appear in English even when the rest "
+        "of the speech is in a regional language."
+    ),
+    "terms": [
+        # Org / product
+        "Bajaj", "Bajaj Auto Credit", "BACL", "RCU", "Monnai",
+        # Process
+        "EMI", "OTP", "ROI", "DP", "Aadhaar", "PAN", "KYC",
+        "sanction letter", "disbursal", "disbursement", "foreclosure",
+        "refinance", "login date", "two-wheeler", "three-wheeler",
+        "co-applicant", "guarantor", "applicant",
+        # Vehicle models / brands seen in test set
+        "Pulsar", "Yamaha", "NS 160", "FZ", "Splendor", "Activa",
+        "Pulsar 150", "Pulsar 220", "Bajaj auto rickshaw",
+        "Hero", "Honda", "TVS",
+        # Indian-language verification phrases (Hindi/Marathi)
+        "finance", "verification", "address", "showroom",
+    ],
+}
+
+
+# ─── Soniox stt-async-v4 STT (primary) ─────────────────────────────────────
+def transcribe_with_soniox(
+    audio_path: str,
+    keyterms: Optional[List[str]] = None,
+):
+    """Run Soniox stt-async-v4 (file upload → transcribe → poll → fetch → cleanup).
+
+    Returns (data_dict, cost_dict) with the same shape as transcribe_with_scribe_v2
+    so the rest of the pipeline (utterance grouping, cost rollup) is unchanged.
+
+    Uses every meaningful accuracy lever from the API:
+      - language_hints (Indian languages + English code-mixing)
+      - enable_speaker_diarization (3+ speakers handled natively)
+      - enable_language_identification (per-token language tag)
+      - context.general / context.text / context.terms (BACL/RCU vocab + user
+        keyterms appended) for domain accuracy
+    Translation, webhooks, and language_hints_strict are intentionally OFF —
+    we want auto-detection and our LLMs handle code-mixed transcripts directly.
+    """
+    api_key = _soniox_api_key()
+    if not api_key:
+        raise RuntimeError("SONIOX_API_KEY is not set in the environment.")
+
+    sess = requests.Session()
+    sess.headers["Authorization"] = f"Bearer {api_key}"
+    t0 = time.time()
+
+    # Merge user-provided keyterms into our standing RCU context.terms list
+    context = json.loads(json.dumps(SONIOX_CONTEXT_RCU))  # deep copy
+    if keyterms:
+        extra = [k.strip() for k in keyterms if k and k.strip()]
+        if extra:
+            context["terms"] = list(dict.fromkeys((context.get("terms") or []) + extra))
+
+    # 1. Upload audio file
+    with open(audio_path, "rb") as f:
+        up = sess.post(f"{SONIOX_BASE}/v1/files", files={"file": f}, timeout=180)
+    if not up.ok:
+        raise RuntimeError(f"Soniox upload failed: {up.status_code} {up.text[:300]}")
+    file_id = up.json()["id"]
+
+    # 2. Create transcription job
+    body = {
+        "model": "stt-async-v4",
+        "file_id": file_id,
+        "language_hints": SONIOX_LANGUAGE_HINTS,
+        "enable_speaker_diarization": True,
+        "enable_language_identification": True,
+        "context": context,
+        "client_reference_id": os.path.basename(audio_path)[:255],
+    }
+    tx = sess.post(f"{SONIOX_BASE}/v1/transcriptions", json=body, timeout=30)
+    if not tx.ok:
+        raise RuntimeError(f"Soniox transcribe-create failed: {tx.status_code} {tx.text[:300]}")
+    transcription_id = tx.json()["id"]
+
+    # 3. Poll for completion
+    poll_deadline = time.time() + 600  # 10 min cap
+    while True:
+        if time.time() > poll_deadline:
+            raise RuntimeError(f"Soniox transcription timed out (id={transcription_id})")
+        st = sess.get(f"{SONIOX_BASE}/v1/transcriptions/{transcription_id}", timeout=30)
+        if not st.ok:
+            raise RuntimeError(f"Soniox poll failed: {st.status_code} {st.text[:300]}")
+        status = st.json().get("status")
+        if status == "completed":
+            break
+        if status == "error":
+            raise RuntimeError(f"Soniox transcription errored: {st.json()}")
+        time.sleep(1.5)
+
+    # 4. Fetch transcript
+    tr = sess.get(f"{SONIOX_BASE}/v1/transcriptions/{transcription_id}/transcript", timeout=60)
+    if not tr.ok:
+        raise RuntimeError(f"Soniox transcript fetch failed: {tr.status_code} {tr.text[:300]}")
+    transcript = tr.json()
+    wall = time.time() - t0
+
+    # 5. Cleanup (best effort — don't fail the job if cleanup fails)
+    try:
+        sess.delete(f"{SONIOX_BASE}/v1/transcriptions/{transcription_id}", timeout=15)
+        sess.delete(f"{SONIOX_BASE}/v1/files/{file_id}", timeout=15)
+    except Exception:
+        pass
+
+    tokens = transcript.get("tokens") or []
+    duration_s = (max((t.get("end_ms") or 0) for t in tokens) / 1000.0) if tokens else 0.0
+    duration_hr = duration_s / 3600
+
+    # Pick the most-common language across tokens (mirrors ElevenLabs' single language_code field)
+    lang_counts: Dict[str, int] = {}
+    for t in tokens:
+        l = t.get("language")
+        if l:
+            lang_counts[l] = lang_counts.get(l, 0) + 1
+    dominant_lang = max(lang_counts, key=lang_counts.get) if lang_counts else None
+    # Probability proxy: dominant tokens / total tokens with any language assigned
+    lang_prob = lang_counts.get(dominant_lang, 0) / max(sum(lang_counts.values()), 1) if dominant_lang else None
+
+    # Normalised data dict (matches ElevenLabs' shape so downstream code is unchanged)
+    data = {
+        "text": transcript.get("text"),
+        "language_code": dominant_lang,
+        "language_probability": lang_prob,
+        "audio_duration_secs": duration_s,
+        "transcription_id": transcription_id,
+        "words": [
+            # Convert Soniox token → ElevenLabs-style word
+            {
+                "type": "word" if not tok.get("is_audio_event") else "audio_event",
+                "text": tok.get("text") or "",
+                "speaker_id": (f"speaker_{tok.get('speaker')}" if tok.get("speaker") is not None else None),
+                "start": (tok.get("start_ms") or 0) / 1000.0,
+                "end":   (tok.get("end_ms") or 0) / 1000.0,
+                "confidence": tok.get("confidence"),
+                "language": tok.get("language"),
+            }
+            for tok in tokens
+        ],
+        # Keep the raw response for audit/debugging
+        "soniox_raw": transcript,
+    }
+
+    base_cost = duration_hr * RATE_CARD["soniox_stt_async_v4_per_hour"]
+    cost = {
+        "audio_seconds": round(duration_s, 3),
+        "audio_minutes": round(duration_s / 60, 4),
+        "audio_hours":   round(duration_hr, 6),
+        "rate_per_hour_base":     RATE_CARD["soniox_stt_async_v4_per_hour"],
+        "rate_per_hour_keyterms": 0.0,
+        "rate_per_hour_total":    RATE_CARD["soniox_stt_async_v4_per_hour"],
+        "cost_usd_base":     round(base_cost, 8),
+        "cost_usd_keyterms": 0.0,
+        "cost_usd_total":    round(base_cost, 8),
+        "keyterms_used":     keyterms or [],
+        "wall_time_s":       round(wall, 2),
+        "provider":          "soniox_stt_async_v4",
+    }
+    return data, cost
+
+
+def transcribe_stt(
+    audio_path: str,
+    eleven_client: Optional[ElevenLabs],
+    keyterms: Optional[List[str]] = None,
+):
+    """Router — dispatches to the active STT provider based on STT_PROVIDER env var.
+    Defaults to Soniox (cheaper + better Indian-language support per our 5-call benchmark).
+    Falls back to ElevenLabs Scribe v2 if STT_PROVIDER=elevenlabs.
+    """
+    provider = _stt_provider()
+    if provider == "elevenlabs":
+        if eleven_client is None:
+            raise RuntimeError("STT_PROVIDER=elevenlabs but no ElevenLabs client provided.")
+        return transcribe_with_scribe_v2(audio_path, eleven_client, keyterms=keyterms)
+    # Default: Soniox
+    return transcribe_with_soniox(audio_path, keyterms=keyterms)
+
+
+# ─── ElevenLabs Scribe v2 STT (fallback, kept for parity) ──────────────────
 def transcribe_with_scribe_v2(
     audio_path: str,
     eleven_client: ElevenLabs,
@@ -89,6 +307,7 @@ def transcribe_with_scribe_v2(
         "cost_usd_total":    round(total_cost, 8),
         "keyterms_used":     kwargs.get("keyterms", []),
         "wall_time_s":       round(wall, 2),
+        "provider":          "elevenlabs_scribe_v2",
     }
     return data, cost
 
@@ -586,11 +805,12 @@ def analyze_call_end_to_end(
     llm_deployment: str,
     keyterms: Optional[List[str]] = None,
 ):
-    """One call → STT (Scribe v2) → Multi-agent verification. Returns unified record."""
+    """One call → STT (Soniox stt-async-v4 by default) → Multi-agent verification.
+    STT provider is selected via the STT_PROVIDER env var. Returns unified record."""
     t_call = time.time()
 
-    # Stage 1: STT
-    stt_data, stt_cost = transcribe_with_scribe_v2(audio_path, eleven_client, keyterms=keyterms)
+    # Stage 1: STT (routed by STT_PROVIDER env var)
+    stt_data, stt_cost = transcribe_stt(audio_path, eleven_client, keyterms=keyterms)
     utterances = group_words_into_utterances(stt_data.get("words") or [])
     if not utterances:
         raise RuntimeError("No utterances detected after STT (silent/empty audio?)")
@@ -652,8 +872,16 @@ def analyze_call_end_to_end(
             } if reflection_block.get("applied") else None,
         },
         "stage_1_stt": {
-            "vendor": "ElevenLabs Scribe v2",
-            "model_id": "scribe_v2",
+            "vendor": (
+                "Soniox stt-async-v4"
+                if stt_cost.get("provider") == "soniox_stt_async_v4"
+                else "ElevenLabs Scribe v2"
+            ),
+            "model_id": (
+                "stt-async-v4"
+                if stt_cost.get("provider") == "soniox_stt_async_v4"
+                else "scribe_v2"
+            ),
             "raw_full_text": stt_data.get("text"),
             "utterances": utterances,
             "cost": stt_cost,
