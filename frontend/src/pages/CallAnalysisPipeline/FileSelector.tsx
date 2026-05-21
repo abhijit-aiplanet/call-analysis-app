@@ -5,6 +5,7 @@ import {
   FileAudio, CheckCircle2, XCircle, ChevronRight, ChevronLeft,
 } from "lucide-react";
 import type { BatchFileEntry } from "./types";
+import { inr } from "@/lib/currency";
 
 interface FileSelectorProps {
   files: BatchFileEntry[];
@@ -111,7 +112,7 @@ export const FileSelector = ({ files, selectedIdx, onSelect }: FileSelectorProps
                     </Badge>
                   )}
                   {cost != null && (
-                    <span className="ml-auto font-mono text-slate-500">${cost.toFixed(4)}</span>
+                    <span className="ml-auto font-mono text-slate-500">{inr(cost)}</span>
                   )}
                 </div>
                 {isPending && (

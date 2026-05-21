@@ -1,11 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { DollarSign, Clock, Mic, Brain, Layers } from "lucide-react";
+import { IndianRupee, Clock, Mic, Brain, Layers } from "lucide-react";
 import type { UnifiedCost, VerificationAggregate, STTCost } from "./types";
-
-const fmtUSD = (n: number, digits = 6) => `$${n.toFixed(digits)}`;
-const fmtCents = (n: number) => `${(n * 100).toFixed(4)}¢`;
+import { inr, inrScale, USD_TO_INR } from "@/lib/currency";
 
 interface CostBreakdownProps {
   unified: UnifiedCost;
@@ -35,7 +33,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
               <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1">
                 Total Pipeline Cost
               </div>
-              <div className="text-2xl font-bold text-emerald-700">{fmtUSD(unified.total_usd)}</div>
+              <div className="text-2xl font-bold text-emerald-700">{inr(unified.total_usd)}</div>
               <div className="text-xs text-slate-500 mt-0.5">for this call</div>
             </div>
             <div>
@@ -43,15 +41,9 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                 Cost per Minute of Audio
               </div>
               <div className="text-2xl font-bold text-slate-800">
-                {unified.cost_per_minute_audio_usd != null
-                  ? fmtUSD(unified.cost_per_minute_audio_usd, 6)
-                  : "—"}
+                {inr(unified.cost_per_minute_audio_usd ?? undefined)}
               </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                {unified.cost_per_minute_audio_usd != null && (
-                  <>≈ {fmtCents(unified.cost_per_minute_audio_usd)} /min</>
-                )}
-              </div>
+              <div className="text-xs text-slate-500 mt-0.5">audio-time rate</div>
             </div>
             <div>
               <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1">
@@ -90,15 +82,15 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                 <span className="text-sm font-medium text-slate-700">STT (ElevenLabs Scribe v2)</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-slate-900">{fmtUSD(unified.stt_usd)}</span>
+                <span className="text-sm font-semibold text-slate-900">{inr(unified.stt_usd)}</span>
                 <Badge variant="outline" className="text-xs font-normal">{sttPct.toFixed(1)}%</Badge>
               </div>
             </div>
             <Progress value={sttPct} className="h-2 bg-slate-100" />
             <div className="text-xs text-slate-500 mt-1.5 ml-6">
-              base @ ${sttCost.rate_per_hour_base.toFixed(2)}/hr
+              base @ {inr(sttCost.rate_per_hour_base)}/hr
               {sttCost.cost_usd_keyterms > 0 && (
-                <> + keyterms @ ${sttCost.rate_per_hour_keyterms.toFixed(2)}/hr (+{fmtUSD(sttCost.cost_usd_keyterms)})</>
+                <> + keyterms @ {inr(sttCost.rate_per_hour_keyterms)}/hr (+{inr(sttCost.cost_usd_keyterms)})</>
               )}
             </div>
           </div>
@@ -111,13 +103,13 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                 <span className="text-sm font-medium text-slate-700">Multi-Agent Verification (gpt-4o-mini)</span>
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-slate-900">{fmtUSD(unified.verification_usd)}</span>
+                <span className="text-sm font-semibold text-slate-900">{inr(unified.verification_usd)}</span>
                 <Badge variant="outline" className="text-xs font-normal">{verPct.toFixed(1)}%</Badge>
               </div>
             </div>
             <Progress value={verPct} className="h-2 bg-slate-100" />
             <div className="text-xs text-slate-500 mt-1.5 ml-6">
-              4 specialists ({fmtUSD(unified.specialists_usd)}) + decision agent ({fmtUSD(unified.decision_agent_usd)})
+              specialists ({inr(unified.specialists_usd)}) + decision ({inr(unified.decision_agent_usd)})
               <span className="text-slate-400"> · {verification.aggregate_cost.total_tokens.toLocaleString()} tokens</span>
             </div>
           </div>
@@ -152,7 +144,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                   {(verification.triage.cost.wall_time_s ?? 0).toFixed(1)}s
                 </div>
                 <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
-                  {fmtUSD(verification.triage.cost.cost_usd_total)}
+                  {inr(verification.triage.cost.cost_usd_total)}
                 </div>
               </div>
             )}
@@ -169,7 +161,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                   {(payload.cost.wall_time_s ?? 0).toFixed(1)}s
                 </div>
                 <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
-                  {fmtUSD(payload.cost.cost_usd_total)}
+                  {inr(payload.cost.cost_usd_total)}
                 </div>
               </div>
             ))}
@@ -183,7 +175,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                 {(verification.decision_agent.cost.wall_time_s ?? 0).toFixed(1)}s
               </div>
               <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
-                {fmtUSD(verification.decision_agent.cost.cost_usd_total)}
+                {inr(verification.decision_agent.cost.cost_usd_total)}
               </div>
             </div>
             {verification.reflection && (verification.reflection.cost.cost_usd_total > 0 || verification.reflection.applied) && (
@@ -202,7 +194,7 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
                   {(verification.reflection.cost.wall_time_s ?? 0).toFixed(1)}s
                 </div>
                 <div className="col-span-2 text-right text-sm font-mono font-semibold text-slate-900">
-                  {fmtUSD(verification.reflection.cost.cost_usd_total)}
+                  {inr(verification.reflection.cost.cost_usd_total)}
                 </div>
               </div>
             )}
@@ -215,28 +207,29 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-3 text-base font-semibold">
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-2">
-              <DollarSign className="size-4 text-amber-600" />
+              <IndianRupee className="size-4 text-amber-600" />
             </div>
             <span>Rate Card</span>
+            <span className="ml-auto text-[10px] font-normal text-slate-400">1 USD ≈ ₹{USD_TO_INR}</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
             <div className="flex justify-between p-2 rounded bg-slate-50">
               <span className="text-slate-600">Scribe v2 base</span>
-              <span className="font-mono font-semibold">${unified.rate_card.elevenlabs_scribe_v2_base_per_hour}/hr</span>
+              <span className="font-mono font-semibold">{inr(unified.rate_card.elevenlabs_scribe_v2_base_per_hour)}/hr</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-50">
               <span className="text-slate-600">Keyterms surcharge</span>
-              <span className="font-mono font-semibold">+${unified.rate_card.elevenlabs_keyterms_surcharge_per_hour}/hr</span>
+              <span className="font-mono font-semibold">+{inr(unified.rate_card.elevenlabs_keyterms_surcharge_per_hour)}/hr</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-50">
               <span className="text-slate-600">gpt-4o-mini input</span>
-              <span className="font-mono font-semibold">${unified.rate_card.azure_gpt4o_mini_per_M_input_usd}/M tokens</span>
+              <span className="font-mono font-semibold">{inr(unified.rate_card.azure_gpt4o_mini_per_M_input_usd)}/M tokens</span>
             </div>
             <div className="flex justify-between p-2 rounded bg-slate-50">
               <span className="text-slate-600">gpt-4o-mini output</span>
-              <span className="font-mono font-semibold">${unified.rate_card.azure_gpt4o_mini_per_M_output_usd}/M tokens</span>
+              <span className="font-mono font-semibold">{inr(unified.rate_card.azure_gpt4o_mini_per_M_output_usd)}/M tokens</span>
             </div>
           </div>
         </CardContent>
@@ -251,15 +244,15 @@ export const CostBreakdown = ({ unified, sttCost, verification, audioMinutes }: 
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               {[
-                ["1,000 min (~200 calls)", unified.cost_per_minute_audio_usd * 1000],
-                ["10,000 min (~2K calls)", unified.cost_per_minute_audio_usd * 10000],
-                ["100K min (~20K calls)",  unified.cost_per_minute_audio_usd * 100000],
-                ["1M min (~200K calls)",   unified.cost_per_minute_audio_usd * 1000000],
+                ["1,000 min (~200 calls)",     unified.cost_per_minute_audio_usd * 1_000],
+                ["10,000 min (~2K calls)",     unified.cost_per_minute_audio_usd * 10_000],
+                ["1,00,000 min (~20K calls)",  unified.cost_per_minute_audio_usd * 1_00_000],
+                ["10,00,000 min (~2L calls)",  unified.cost_per_minute_audio_usd * 10_00_000],
               ].map(([label, val]) => (
                 <div key={label as string} className="p-3 rounded-lg bg-slate-50 border border-slate-100">
                   <div className="text-xs text-slate-500 mb-1">{label}</div>
                   <div className="text-base font-semibold text-slate-900 font-mono">
-                    ${(val as number).toFixed(2)}
+                    {inrScale(val as number)}
                   </div>
                 </div>
               ))}

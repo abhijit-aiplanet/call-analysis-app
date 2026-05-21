@@ -5,6 +5,7 @@ import {
   Hourglass, CheckCircle2, XCircle, Loader2, FileAudio,
 } from "lucide-react";
 import type { BatchJob, FileStatus } from "./types";
+import { inr } from "@/lib/currency";
 
 const STATUS_TONE: Record<FileStatus, string> = {
   queued:            "bg-slate-100 text-slate-500 border-slate-200",
@@ -95,7 +96,7 @@ export const BatchProgress = ({ job }: BatchProgressProps) => {
                   {f.error && <div className="text-[11px] text-red-600 mt-0.5 truncate" title={f.error}>{f.error}</div>}
                   {f.result && (
                     <div className="text-[11px] text-slate-500 mt-0.5">
-                      {f.result.audio_meta.language_code} · {f.result.audio_meta.audio_duration_s.toFixed(0)}s · ${f.result.unified_cost.total_usd.toFixed(4)}
+                      {f.result.audio_meta.language_code} · {f.result.audio_meta.audio_duration_s.toFixed(0)}s · {inr(f.result.unified_cost.total_usd)}
                     </div>
                   )}
                 </div>
